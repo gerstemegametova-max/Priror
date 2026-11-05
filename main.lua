@@ -56,7 +56,8 @@ function Utils.DeepClone(tbl, seen)
     local copy = {}; seen[tbl] = copy
     for k, v in pairs(tbl) do copy[Utils.DeepClone(k, seen)] = Utils.DeepClone(v, seen) end
     return copy
-endlocal Visuals = {}
+end
+    local Visuals = {}
 function Visuals.Init()
     Utils.Track(RunService.Heartbeat:Connect(function()
         if not State.Active then return end
