@@ -1,4 +1,4 @@
--- Prior Extinction // Ultimate Compact (Mobile Optimized + Reach + ESP)
+-- Prior Extinction // Ultimate Compact (Optimized & Working)
 print("[PE] Запуск оптимизированного скрипта...")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -17,20 +17,14 @@ if Env.PriorUI_Cleanup then pcall(Env.PriorUI_Cleanup) end
 -- 1. State & Config
 local State = {
     Active = true, Minimized = false, Connections = {}, OriginalParts = {}, LocalOriginalParts = {}, CachedModels = {},
-    -- Combat (Enemy)
     SilentAim = false, AimTargetPart = "Head",
     HitboxMaster = false, HitboxTransparency = 0.65, HitboxSizeLevel = 3, SelectedHitboxPart = "Head",
     NoAttackCD = false,
-    -- Reach (Свой хитбокс атаки с мульти-выбором)
-    ReachEnabled = false,
-    ReachSizeLevel = 3, 
-    ReachTransparency = 0.75,
+    ReachEnabled = false, ReachSizeLevel = 3, ReachTransparency = 0.75,
     ReachParts = { Jaw = true, Head = true, Tail = false, Leg = false, Body = false },
-    -- Render
     ESPEnabled = false, ESPMaxDistance = 2000, ESP_Health = true, ESP_Stamina = true,
     ESPBones = false, ESPCorpses = false, WorldESPMaxDistance = 2000,
     NightVision = false, NoBlur = false, NoSleepScreen = false,
-    -- Tools
     AutoClean = false,
     SaveDinoEnabled = false, SaveDinoMode = "Down", SaveDinoOffset = 70,
     SaveDinoOriginalCFrame = nil, SaveDinoTargetCFrame = nil, SaveDinoCurrentCFrame = nil,
@@ -43,17 +37,8 @@ local CLEAN_PREFIX_BYTE = string.char(1)
 local CLEAN_BRIDGE_ID = string.char(202, 62, 227, 254, 171, 38, 70, 171, 180, 233, 209, 163, 17, 33, 119, 42)
 local DEFAULT_WATER_COORDS = { -4864.8583984375, 144.86546325683594, 2668.1396484375 }
 
-local LO = {
-    Ambient = Lighting.Ambient, OutdoorAmbient = Lighting.OutdoorAmbient,
-    Brightness = Lighting.Brightness, GlobalShadows = Lighting.GlobalShadows, ClockTime = Lighting.ClockTime
-}
-local Theme = {
-    Background = Color3.fromRGB(12, 12, 14), Surface = Color3.fromRGB(18, 18, 22),
-    Element = Color3.fromRGB(26, 26, 32), ElementActive = Color3.fromRGB(52, 52, 64),
-    Stroke = Color3.fromRGB(45, 45, 54), TextPrimary = Color3.fromRGB(235, 235, 240),
-    TextSecondary = Color3.fromRGB(145, 145, 155), Danger = Color3.fromRGB(40, 22, 24),
-    DangerStroke = Color3.fromRGB(95, 40, 45)
-}
+local LO = { Ambient = Lighting.Ambient, OutdoorAmbient = Lighting.OutdoorAmbient, Brightness = Lighting.Brightness, GlobalShadows = Lighting.GlobalShadows, ClockTime = Lighting.ClockTime }
+local Theme = { Background = Color3.fromRGB(12, 12, 14), Surface = Color3.fromRGB(18, 18, 22), Element = Color3.fromRGB(26, 26, 32), ElementActive = Color3.fromRGB(52, 52, 64), Stroke = Color3.fromRGB(45, 45, 54), TextPrimary = Color3.fromRGB(235, 235, 240), TextSecondary = Color3.fromRGB(145, 145, 155), Danger = Color3.fromRGB(40, 22, 24), DangerStroke = Color3.fromRGB(95, 40, 45) }
 
 local HitboxSizes = { 10, 16, 22, 28, 35 }
 local ReachSizes = { -0.5, 10, 18, 26, 36, 50 }
@@ -70,40 +55,18 @@ local PartPatterns = {
 local Utils = {}
 function Utils.Track(c) if c then table.insert(State.Connections, c) end return c end
 function Utils.Notify(t, x) pcall(function() StarterGui:SetCore("SendNotification", { Title = t, Text = x, Duration = 3 }) end) end
-function Utils.GuiParent()
-    local ok, p = pcall(function() if type(gethui) == "function" then return gethui() end return CoreGui end)
-    if ok and p then return p end
-    return LocalPlayer and LocalPlayer:WaitForChild("PlayerGui", 5) or CoreGui
-end
-function Utils.Style(i, r, sc, sw)
-    local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, r or 8); c.Parent = i
-    if sc then
-        local s = Instance.new("UIStroke"); s.Color = sc; s.Thickness = sw or 1
-        s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border; s.Parent = i
-    end
-end
+function Utils.GuiParent() local ok, p = pcall(function() if type(gethui) == "function" then return gethui() end return CoreGui end) if ok and p then return p end return LocalPlayer and LocalPlayer:WaitForChild("PlayerGui", 5) or CoreGui end
+function Utils.Style(i, r, sc, sw) local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, r or 8); c.Parent = i; if sc then local s = Instance.new("UIStroke"); s.Color = sc; s.Thickness = sw or 1; s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border; s.Parent = i end end
 function Utils.Drag(tr, tf, cb)
     local d, di, ds, sp, md = false, nil, nil, nil, 0
     Utils.Track(tr.InputBegan:Connect(function(inp)
         if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then
             d = true; ds = inp.Position; sp = tf.Position; md = 0
-            local rc; rc = inp.Changed:Connect(function()
-                if inp.UserInputState == Enum.UserInputState.End then
-                    d = false; if rc then rc:Disconnect() end
-                    if md < 12 and cb then cb() end
-                end
-            end)
+            local rc; rc = inp.Changed:Connect(function() if inp.UserInputState == Enum.UserInputState.End then d = false; if rc then rc:Disconnect() end; if md < 12 and cb then cb() end end end)
         end
     end))
-    Utils.Track(tr.InputChanged:Connect(function(inp)
-        if inp.UserInputType == Enum.UserInputType.MouseMovement or inp.UserInputType == Enum.UserInputType.Touch then di = inp end
-    end))
-    Utils.Track(UserInputService.InputChanged:Connect(function(inp)
-        if inp == di and d and ds and sp then
-            local dl = inp.Position - ds; md = dl.Magnitude
-            tf.Position = UDim2.new(sp.X.Scale, sp.X.Offset + dl.X, sp.Y.Scale, sp.Y.Offset + dl.Y)
-        end
-    end))
+    Utils.Track(tr.InputChanged:Connect(function(inp) if inp.UserInputType == Enum.UserInputType.MouseMovement or inp.UserInputType == Enum.UserInputType.Touch then di = inp end end))
+    Utils.Track(UserInputService.InputChanged:Connect(function(inp) if inp == di and d and ds and sp then local dl = inp.Position - ds; md = dl.Magnitude; tf.Position = UDim2.new(sp.X.Scale, sp.X.Offset + dl.X, sp.Y.Scale, sp.Y.Offset + dl.Y) end end))
 end
 function Utils.DeepClone(tbl, seen)
     if type(tbl) ~= "table" then return tbl end
@@ -114,73 +77,30 @@ function Utils.DeepClone(tbl, seen)
     return copy
 end
 
--- 3. Visuals (Оптимизировано: проверка на изменение)
+-- 3. Visuals
 local Visuals = {}
-local lastNightVision, lastNoBlur = false, false
 function Visuals.Init()
     Utils.Track(RunService.Heartbeat:Connect(function()
         if not State.Active then return end
-        if State.NightVision ~= lastNightVision then
-            lastNightVision = State.NightVision
-            if State.NightVision then
-                Lighting.Ambient = Color3.fromRGB(255, 255, 255); Lighting.OutdoorAmbient = Color3.fromRGB(255, 255, 255)
-                Lighting.Brightness = 3; Lighting.GlobalShadows = false
-            else
-                Lighting.Ambient = LO.Ambient; Lighting.OutdoorAmbient = LO.OutdoorAmbient
-                Lighting.Brightness = LO.Brightness; Lighting.GlobalShadows = LO.GlobalShadows
-            end
-        end
-        
-        if State.NoBlur ~= lastNoBlur then
-            lastNoBlur = State.NoBlur
-            if State.NoBlur then
-                for _, e in ipairs(Lighting:GetChildren()) do
-                    if e:IsA("BlurEffect") or e:IsA("DepthOfFieldEffect") then e.Enabled = false end
-                end
-            end
-        end
-        
-        if State.NoSleepScreen then
-            for _, e in ipairs(Lighting:GetChildren()) do
-                if e:IsA("ColorCorrectionEffect") and (e.Brightness < -0.2 or e.TintColor == Color3.new(0, 0, 0)) then
-                    e.Brightness = 0; e.TintColor = Color3.new(1, 1, 1)
-                end
-            end
-        end
+        if State.NightVision then Lighting.Ambient = Color3.fromRGB(255, 255, 255); Lighting.OutdoorAmbient = Color3.fromRGB(255, 255, 255); Lighting.Brightness = 3; Lighting.GlobalShadows = false
+        else Lighting.Ambient = LO.Ambient; Lighting.OutdoorAmbient = LO.OutdoorAmbient; Lighting.Brightness = LO.Brightness; Lighting.GlobalShadows = LO.GlobalShadows end
+        if State.NoBlur then for _, e in ipairs(Lighting:GetChildren()) do if e:IsA("BlurEffect") or e:IsA("DepthOfFieldEffect") then e.Enabled = false end end end
+        if State.NoSleepScreen then for _, e in ipairs(Lighting:GetChildren()) do if e:IsA("ColorCorrectionEffect") and (e.Brightness < -0.2 or e.TintColor == Color3.new(0, 0, 0)) then e.Brightness = 0; e.TintColor = Color3.new(1, 1, 1) end end end
     end))
 end
-function Visuals.Restore()
-    Lighting.Ambient = LO.Ambient; Lighting.OutdoorAmbient = LO.OutdoorAmbient
-    Lighting.Brightness = LO.Brightness; Lighting.GlobalShadows = LO.GlobalShadows; Lighting.ClockTime = LO.ClockTime
-end
+function Visuals.Restore() Lighting.Ambient = LO.Ambient; Lighting.OutdoorAmbient = LO.OutdoorAmbient; Lighting.Brightness = LO.Brightness; Lighting.GlobalShadows = LO.GlobalShadows; Lighting.ClockTime = LO.ClockTime end
 
 -- 4. Survival
 local Survival = {}
 local DataRemote = nil
-local function FindDataRemote()
-    if DataRemote and DataRemote.Parent then return DataRemote end
-    local found = ReplicatedStorage:FindFirstChild("dataRemoteEvent", true)
-    if found and found:IsA("RemoteEvent") then DataRemote = found; return found end
-    return nil
-end
-
+local function FindDataRemote() if DataRemote and DataRemote.Parent then return DataRemote end local found = ReplicatedStorage:FindFirstChild("dataRemoteEvent", true) if found and found:IsA("RemoteEvent") then DataRemote = found; return found end return nil end
 function Survival.Init()
     task.spawn(function()
         while State.Active do
             if State.AutoClean then
                 pcall(function()
-                    if Env.PE_CapturedCleanPacket and Env.PE_CapturedCleanPacket.Remote then
-                        Env.PE_CapturedCleanPacket.Remote:FireServer(table.unpack(Utils.DeepClone(Env.PE_CapturedCleanPacket.Args)))
-                    else
-                        local rem = FindDataRemote()
-                        if rem then
-                            local packet = {
-                                [1] = { [1] = CLEAN_PREFIX_BYTE, [2] = CLEAN_BRIDGE_ID, [3] = { DEFAULT_WATER_COORDS[1], DEFAULT_WATER_COORDS[2], DEFAULT_WATER_COORDS[3] } },
-                                [2] = CLEAN_ACTION_BYTE
-                            }
-                            rem:FireServer(packet)
-                        end
-                    end
+                    if Env.PE_CapturedCleanPacket and Env.PE_CapturedCleanPacket.Remote then Env.PE_CapturedCleanPacket.Remote:FireServer(table.unpack(Utils.DeepClone(Env.PE_CapturedCleanPacket.Args)))
+                    else local rem = FindDataRemote() if rem then local packet = { [1] = { [1] = CLEAN_PREFIX_BYTE, [2] = CLEAN_BRIDGE_ID, [3] = { DEFAULT_WATER_COORDS[1], DEFAULT_WATER_COORDS[2], DEFAULT_WATER_COORDS[3] } }, [2] = CLEAN_ACTION_BYTE }; rem:FireServer(packet) end end
                 end)
             end
             task.wait(1.0)
@@ -190,67 +110,24 @@ end
 
 -- 5. Save Dino
 local SaveDino = { Pad = nil }
-local function ensurePad()
-    if SaveDino.Pad and SaveDino.Pad.Parent then return SaveDino.Pad end
-    local p = Instance.new("Part"); p.Name = "PE_UPad"; p.Size = Vector3.new(60, 3, 60)
-    p.Anchored = true; p.CanCollide = true; p.Transparency = 0.85; p.Color = Color3.fromRGB(30, 30, 35)
-    p.Parent = Workspace; SaveDino.Pad = p; return p
-end
+local function ensurePad() if SaveDino.Pad and SaveDino.Pad.Parent then return SaveDino.Pad end local p = Instance.new("Part"); p.Name = "PE_UPad"; p.Size = Vector3.new(60, 3, 60); p.Anchored = true; p.CanCollide = true; p.Transparency = 0.85; p.Color = Color3.fromRGB(30, 30, 35); p.Parent = Workspace; SaveDino.Pad = p; return p end
 local function killPad() if SaveDino.Pad then pcall(function() SaveDino.Pad:Destroy() end) SaveDino.Pad = nil end end
-local function noclip(c, en)
-    if not c then return end
-    if en then
-        for _, p in ipairs(c:GetDescendants()) do
-            if p:IsA("BasePart") then
-                if State.SaveDinoCollisions[p] == nil then State.SaveDinoCollisions[p] = p.CanCollide end
-                p.CanCollide = false
-            end
-        end
-    else
-        for p, o in pairs(State.SaveDinoCollisions) do if p and p.Parent then pcall(function() p.CanCollide = o end) end end
-        table.clear(State.SaveDinoCollisions)
-    end
-end
-local function zero(c)
-    if not c then return end
-    for _, p in ipairs(c:GetDescendants()) do
-        if p:IsA("BasePart") then pcall(function() p.AssemblyLinearVelocity = Vector3.zero; p.AssemblyAngularVelocity = Vector3.zero end) end
-    end
-end
-local function feetOff(c)
-    local ok, _, sz = pcall(function() return c:GetBoundingBox() end)
-    if ok and sz then return math.clamp(sz.Y * 0.5, 3, 25) end
-    return 6
-end
-function SaveDino.RecalculateTarget()
-    if not State.SaveDinoOriginalCFrame then return end
-    local y = (State.SaveDinoMode == "Down") and -State.SaveDinoOffset or (State.SaveDinoOffset * 4)
-    State.SaveDinoTargetCFrame = State.SaveDinoOriginalCFrame + Vector3.new(0, y, 0)
-end
+local function noclip(c, en) if not c then return end; if en then for _, p in ipairs(c:GetDescendants()) do if p:IsA("BasePart") then if State.SaveDinoCollisions[p] == nil then State.SaveDinoCollisions[p] = p.CanCollide end p.CanCollide = false end end else for p, o in pairs(State.SaveDinoCollisions) do if p and p.Parent then pcall(function() p.CanCollide = o end) end end table.clear(State.SaveDinoCollisions) end end
+local function zero(c) if not c then return end for _, p in ipairs(c:GetDescendants()) do if p:IsA("BasePart") then pcall(function() p.AssemblyLinearVelocity = Vector3.zero; p.AssemblyAngularVelocity = Vector3.zero end) end end end
+local function feetOff(c) local ok, _, sz = pcall(function() return c:GetBoundingBox() end) if ok and sz then return math.clamp(sz.Y * 0.5, 3, 25) end return 6 end
+function SaveDino.RecalculateTarget() if not State.SaveDinoOriginalCFrame then return end local y = (State.SaveDinoMode == "Down") and -State.SaveDinoOffset or (State.SaveDinoOffset * 4); State.SaveDinoTargetCFrame = State.SaveDinoOriginalCFrame + Vector3.new(0, y, 0) end
 function SaveDino.SetEnabled(en)
-    State.SaveDinoEnabled = en; local c = LocalPlayer.Character
-    if not c then State.SaveDinoPhase = "idle"; return end
+    State.SaveDinoEnabled = en; local c = LocalPlayer.Character; if not c then State.SaveDinoPhase = "idle"; return end
     if en then
-        if State.SaveDinoPhase == "idle" or not State.SaveDinoOriginalCFrame then
-            local ok, pv = pcall(function() return c:GetPivot() end)
-            if not ok or not pv then Utils.Notify("Save Dino", "Позиция не определена"); State.SaveDinoEnabled = false; return end
-            State.SaveDinoOriginalCFrame = pv; State.SaveDinoCurrentCFrame = pv
-        end
+        if State.SaveDinoPhase == "idle" or not State.SaveDinoOriginalCFrame then local ok, pv = pcall(function() return c:GetPivot() end) if not ok or not pv then Utils.Notify("Save Dino", "Позиция не определена"); State.SaveDinoEnabled = false; return end State.SaveDinoOriginalCFrame = pv; State.SaveDinoCurrentCFrame = pv end
         SaveDino.RecalculateTarget(); State.SaveDinoPhase = "moving_to_safe"
-        local h = c:FindFirstChildOfClass("Humanoid")
-        if h then pcall(function() h:SetStateEnabled(Enum.HumanoidStateType.Freefall, false); h:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false); h:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false) end) end
+        local h = c:FindFirstChildOfClass("Humanoid"); if h then pcall(function() h:SetStateEnabled(Enum.HumanoidStateType.Freefall, false); h:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false); h:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false) end) end
         ensurePad(); Utils.Notify("Save Dino", "Погружение...")
-    elseif State.SaveDinoPhase ~= "idle" then
-        State.SaveDinoPhase = "returning"; Utils.Notify("Save Dino", "Возврат...")
-    end
+    elseif State.SaveDinoPhase ~= "idle" then State.SaveDinoPhase = "returning"; Utils.Notify("Save Dino", "Возврат...") end
 end
 function SaveDino.ForceReset()
     State.SaveDinoEnabled = false; State.SaveDinoPhase = "idle"; local c = LocalPlayer.Character
-    if c then
-        noclip(c, false); zero(c)
-        local h = c:FindFirstChildOfClass("Humanoid")
-        if h then pcall(function() h:SetStateEnabled(Enum.HumanoidStateType.Freefall, true); h:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true); h:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, true); h:ChangeState(Enum.HumanoidStateType.Running) end) end
-    end
+    if c then noclip(c, false); zero(c); local h = c:FindFirstChildOfClass("Humanoid"); if h then pcall(function() h:SetStateEnabled(Enum.HumanoidStateType.Freefall, true); h:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true); h:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, true); h:ChangeState(Enum.HumanoidStateType.Running) end) end end
     State.SaveDinoOriginalCFrame = nil; State.SaveDinoTargetCFrame = nil; State.SaveDinoCurrentCFrame = nil; killPad()
 end
 function SaveDino.Init()
@@ -262,94 +139,46 @@ function SaveDino.Init()
         if not State.SaveDinoCurrentCFrame then State.SaveDinoCurrentCFrame = cur end
         local pad = ensurePad(); local fo = feetOff(c)
         if State.SaveDinoPhase == "moving_to_safe" then
-            noclip(c, true)
-            local df = State.SaveDinoTargetCFrame.Position - State.SaveDinoCurrentCFrame.Position
-            local di = df.Magnitude; local st = math.min(di, 120 * dt)
-            if di <= 1.5 then State.SaveDinoCurrentCFrame = State.SaveDinoTargetCFrame; State.SaveDinoPhase = "holding"; Utils.Notify("Save Dino", "В безопасности")
-            else State.SaveDinoCurrentCFrame = State.SaveDinoCurrentCFrame + df.Unit * st end
-            pad.CFrame = CFrame.new(State.SaveDinoCurrentCFrame.Position - Vector3.new(0, fo, 0))
-            pcall(function() c:PivotTo(State.SaveDinoCurrentCFrame) end); zero(c)
+            noclip(c, true); local df = State.SaveDinoTargetCFrame.Position - State.SaveDinoCurrentCFrame.Position; local di = df.Magnitude; local st = math.min(di, 120 * dt)
+            if di <= 1.5 then State.SaveDinoCurrentCFrame = State.SaveDinoTargetCFrame; State.SaveDinoPhase = "holding"; Utils.Notify("Save Dino", "В безопасности") else State.SaveDinoCurrentCFrame = State.SaveDinoCurrentCFrame + df.Unit * st end
+            pad.CFrame = CFrame.new(State.SaveDinoCurrentCFrame.Position - Vector3.new(0, fo, 0)); pcall(function() c:PivotTo(State.SaveDinoCurrentCFrame) end); zero(c)
         elseif State.SaveDinoPhase == "holding" then
-            noclip(c, true); pad.CFrame = CFrame.new(State.SaveDinoTargetCFrame.Position - Vector3.new(0, fo, 0))
-            pcall(function() c:PivotTo(State.SaveDinoTargetCFrame) end); zero(c)
+            noclip(c, true); pad.CFrame = CFrame.new(State.SaveDinoTargetCFrame.Position - Vector3.new(0, fo, 0)); pcall(function() c:PivotTo(State.SaveDinoTargetCFrame) end); zero(c)
         elseif State.SaveDinoPhase == "returning" then
-            noclip(c, true); local sf = State.SaveDinoOriginalCFrame + Vector3.new(0, 2.5, 0)
-            local df = sf.Position - State.SaveDinoCurrentCFrame.Position; local di = df.Magnitude; local st = math.min(di, 110 * dt)
+            noclip(c, true); local sf = State.SaveDinoOriginalCFrame + Vector3.new(0, 2.5, 0); local df = sf.Position - State.SaveDinoCurrentCFrame.Position; local di = df.Magnitude; local st = math.min(di, 110 * dt)
             if di <= 1.5 then noclip(c, false); pcall(function() c:PivotTo(sf) end); zero(c); SaveDino.ForceReset(); Utils.Notify("Save Dino", "На поверхности!")
-            else
-                State.SaveDinoCurrentCFrame = State.SaveDinoCurrentCFrame + df.Unit * st
-                pad.CFrame = CFrame.new(State.SaveDinoCurrentCFrame.Position - Vector3.new(0, fo, 0))
-                pcall(function() c:PivotTo(State.SaveDinoCurrentCFrame) end); zero(c)
-            end
+            else State.SaveDinoCurrentCFrame = State.SaveDinoCurrentCFrame + df.Unit * st; pad.CFrame = CFrame.new(State.SaveDinoCurrentCFrame.Position - Vector3.new(0, fo, 0)); pcall(function() c:PivotTo(State.SaveDinoCurrentCFrame) end); zero(c) end
         end
     end))
 end
 
--- 6. Combat (Mobile Optimized)
+-- 6. Combat (Оптимизировано: Кэш своего динозавра)
 local Combat = {}
 local ZP = PhysicalProperties.new(0.0001, 0, 0, 0, 0)
-local localCacheDirty = true
+local myCharParts = nil
 
 local function matchCat(n, fullTail)
     local l = string.lower(n)
     for _, c in ipairs({ "Jaw", "Head", "Tail", "Leg", "Body" }) do
         for _, p in ipairs(PartPatterns[c]) do
             if string.find(l, p, 1, true) then
-                if c == "Tail" and not fullTail then
-                    if string.find(l, "tip", 1, true) or string.match(l, "tail[_%s]*[3-9]") then return nil end
-                end
+                if c == "Tail" and not fullTail then if string.find(l, "tip", 1, true) or string.match(l, "tail[_%s]*[3-9]") then return nil end end
                 return c
             end
         end
     end
     return nil
 end
-
 local function isLocal(m) return LocalPlayer.Character and (m == LocalPlayer.Character or m:IsDescendantOf(LocalPlayer.Character)) end
-local function isCritRoot(model, part)
-    if not part or not model then return true end
-    local l = string.lower(part.Name)
-    if l == "humanoidrootpart" or l == "rootpart" or l == "root" or l == "primary" or model.PrimaryPart == part then return true end
-    local ok, ar = pcall(function() return part.AssemblyRootPart end)
-    return ok and ar == part
-end
-local function findPart(model, cat)
-    local c = State.CachedModels[model]
-    if c and c[cat] then for _, p in ipairs(c[cat]) do if p and p.Parent then return p end end end
-    for _, d in ipairs(model:GetDescendants()) do if d:IsA("BasePart") and matchCat(d.Name, false) == cat then return d end end
-    return nil
-end
-local function getEnemy(part)
-    if not part or not part:IsA("BasePart") or isLocal(part) then return nil end
-    local cur = part.Parent
-    while cur and cur ~= Workspace do
-        if cur:IsA("Model") and (cur:FindFirstChildOfClass("Humanoid") or cur:FindFirstChild("Head", true)) then
-            if not isLocal(cur) then return cur end
-        end
-        cur = cur.Parent
-    end
-    return nil
-end
+local function isCritRoot(model, part) if not part or not model then return true end local l = string.lower(part.Name) if l == "humanoidrootpart" or l == "rootpart" or l == "root" or l == "primary" or model.PrimaryPart == part then return true end local ok, ar = pcall(function() return part.AssemblyRootPart end) return ok and ar == part end
+local function findPart(model, cat) local c = State.CachedModels[model] if c and c[cat] then for _, p in ipairs(c[cat]) do if p and p.Parent then return p end end end for _, d in ipairs(model:GetDescendants()) do if d:IsA("BasePart") and matchCat(d.Name, false) == cat then return d end end return nil end
+local function getEnemy(part) if not part or not part:IsA("BasePart") or isLocal(part) then return nil end local cur = part.Parent while cur and cur ~= Workspace do if cur:IsA("Model") and (cur:FindFirstChildOfClass("Humanoid") or cur:FindFirstChild("Head", true)) then if not isLocal(cur) then return cur end end cur = cur.Parent end return nil end
 
 function Combat.ScanModel(model, isSelf)
     local cats = { Head = {}, Jaw = {}, Body = {}, Tail = {}, Leg = {} }
     pcall(function()
-        for _, d in ipairs(model:GetDescendants()) do
-            if d:IsA("BasePart") and not isCritRoot(model, d) then
-                local c = matchCat(d.Name, isSelf)
-                if c and cats[c] then table.insert(cats[c], d) end
-            end
-        end
-        if #cats.Body == 0 then
-            for _, d in ipairs(model:GetDescendants()) do
-                if d:IsA("BasePart") and not isCritRoot(model, d) then
-                    local n = string.lower(d.Name)
-                    if string.find(n, "hit", 1, true) or string.find(n, "spine", 1, true) or string.find(n, "rib", 1, true) then
-                        table.insert(cats.Body, d)
-                    end
-                end
-            end
-        end
+        for _, d in ipairs(model:GetDescendants()) do if d:IsA("BasePart") and not isCritRoot(model, d) then local c = matchCat(d.Name, isSelf) if c and cats[c] then table.insert(cats[c], d) end end end
+        if #cats.Body == 0 then for _, d in ipairs(model:GetDescendants()) do if d:IsA("BasePart") and not isCritRoot(model, d) then local n = string.lower(d.Name) if string.find(n, "hit", 1, true) or string.find(n, "spine", 1, true) or string.find(n, "rib", 1, true) then table.insert(cats.Body, d) end end end end
     end)
     return cats
 end
@@ -359,9 +188,7 @@ local function IsCleanBridgePacket(arg1)
     if arg1[2] == CLEAN_ACTION_BYTE then return true end
     local inner = arg1[1]
     if type(inner) == "table" and inner[2] == CLEAN_BRIDGE_ID then return true end
-    if type(inner) == "table" and inner[1] == CLEAN_PREFIX_BYTE and type(inner[3]) == "table" and type(inner[3][1]) == "number" and type(inner[3][2]) == "number" and type(inner[3][3]) == "number" then
-        return true
-    end
+    if type(inner) == "table" and inner[1] == CLEAN_PREFIX_BYTE and type(inner[3]) == "table" and type(inner[3][1]) == "number" and type(inner[3][2]) == "number" and type(inner[3][3]) == "number" then return true end
     return false
 end
 
@@ -371,47 +198,18 @@ if not Env.PriorUI_HookInstalled then
         old = hookmetamethod(game, "__namecall", function(self, ...)
             local cs = Env.PriorUI_State
             if not (cs and cs.Active) then return old(self, ...) end
-
             local m = getnamecallmethod()
             if m == "FireServer" or m == "InvokeServer" then
                 local args = { ... }
                 local rName = tostring(self.Name)
-
-                if m == "FireServer" and rName == "dataRemoteEvent" then
-                    pcall(function()
-                        if IsCleanBridgePacket(args[1]) then
-                            Env.PE_CapturedCleanPacket = { Remote = self, Args = Utils.DeepClone(args) }
-                        end
-                    end)
-                end
-
+                if m == "FireServer" and rName == "dataRemoteEvent" then pcall(function() if IsCleanBridgePacket(args[1]) then Env.PE_CapturedCleanPacket = { Remote = self, Args = Utils.DeepClone(args) } end end) end
                 if cs.SaveDinoPhase ~= "idle" and string.find(string.lower(rName), "fall", 1, true) then return nil end
-
                 if cs.SilentAim then
                     local modified = false
                     pcall(function()
                         for i, arg in ipairs(args) do
-                            if typeof(arg) == "Instance" and arg:IsA("BasePart") then
-                                local em = getEnemy(arg)
-                                if em then
-                                    local tp = findPart(em, cs.AimTargetPart)
-                                    if tp then args[i] = tp; modified = true end
-                                end
-                            elseif type(arg) == "table" then
-                                for k, v in pairs(arg) do
-                                    if typeof(v) == "Instance" and v:IsA("BasePart") then
-                                        local em = getEnemy(v)
-                                        if em then
-                                            local tp = findPart(em, cs.AimTargetPart)
-                                            if tp then
-                                                arg[k] = tp
-                                                if typeof(arg.Position) == "Vector3" then arg.Position = tp.Position end
-                                                modified = true
-                                            end
-                                        end
-                                    end
-                                end
-                            end
+                            if typeof(arg) == "Instance" and arg:IsA("BasePart") then local em = getEnemy(arg) if em then local tp = findPart(em, cs.AimTargetPart) if tp then args[i] = tp; modified = true end end
+                            elseif type(arg) == "table" then for k, v in pairs(arg) do if typeof(v) == "Instance" and v:IsA("BasePart") then local em = getEnemy(v) if em then local tp = findPart(em, cs.AimTargetPart) if tp then arg[k] = tp; if typeof(arg.Position) == "Vector3" then arg.Position = tp.Position end; modified = true end end end end end
                         end
                     end)
                     if modified then return old(self, table.unpack(args)) end
@@ -424,111 +222,69 @@ if not Env.PriorUI_HookInstalled then
 end
 
 function Combat.Init()
-    Utils.Track(LocalPlayer.CharacterAdded:Connect(function() 
-        localCacheDirty = true 
-        State.LocalOriginalParts = {}
-    end))
+    -- Кэшируем части СВОЕГО динозавра 1 раз при загрузке/респавне
+    local function CacheMyChar()
+        local myChar = LocalPlayer.Character
+        if myChar then myCharParts = Combat.ScanModel(myChar, true) end
+    end
+    Utils.Track(LocalPlayer.CharacterAdded:Connect(function() task.wait(1); CacheMyChar() end))
+    if LocalPlayer.Character then CacheMyChar() end
 
+    -- Обновление списка врагов (реже = меньше лагов)
     task.spawn(function()
         while State.Active do
             pcall(function()
                 local nc = {}
-                for _, p in ipairs(Players:GetPlayers()) do
-                    if p ~= LocalPlayer and p.Character then nc[p.Character] = Combat.ScanModel(p.Character, false) end
-                end
+                for _, p in ipairs(Players:GetPlayers()) do if p ~= LocalPlayer and p.Character then nc[p.Character] = Combat.ScanModel(p.Character, false) end end
                 State.CachedModels = nc
             end)
-            task.wait(1.5) -- Реже обновляем список игроков
+            task.wait(1.5) -- Было 1.0, стало 1.5
         end
     end)
 
+    -- Цикл хитбоксов и Reach (без пересканирования своего динозавра)
     task.spawn(function()
         while State.Active do
             pcall(function()
-                -- 1. Хитбоксы врагов
                 for model, groups in pairs(State.CachedModels) do
                     if model and model.Parent and not isLocal(model) then
-                        local tCat = State.SelectedHitboxPart
-                        local tSize = HitboxSizes[State.HitboxSizeLevel]
+                        local tCat = State.SelectedHitboxPart; local tSize = HitboxSizes[State.HitboxSizeLevel]
                         for cat, parts in pairs(groups) do
                             for idx, part in ipairs(parts) do
                                 if part and part.Parent and not isCritRoot(model, part) then
-                                    if not State.OriginalParts[part] then
-                                        State.OriginalParts[part] = { Size = part.Size, Transparency = part.Transparency, CanCollide = part.CanCollide, CanQuery = part.CanQuery, CanTouch = part.CanTouch, Massless = part.Massless, CustomPhysicalProperties = part.CustomPhysicalProperties, RootPriority = part.RootPriority }
-                                    end
+                                    if not State.OriginalParts[part] then State.OriginalParts[part] = { Size = part.Size, Transparency = part.Transparency, CanCollide = part.CanCollide, CanQuery = part.CanQuery, CanTouch = part.CanTouch, Massless = part.Massless, CustomPhysicalProperties = part.CustomPhysicalProperties, RootPriority = part.RootPriority } end
                                     local o = State.OriginalParts[part]
-                                    if State.HitboxMaster and cat == tCat and idx <= 2 then
-                                        if part.Size ~= Vector3.new(tSize, tSize, tSize) then
-                                            part.Massless = true; part.CanCollide = false; part.CustomPhysicalProperties = ZP; part.RootPriority = -127
-                                            part.Size = Vector3.new(tSize, tSize, tSize); part.Transparency = State.HitboxTransparency; part.CanTouch = true; part.CanQuery = true
-                                        end
-                                    else
-                                        if part.Size ~= o.Size then
-                                            part.Size = o.Size; part.Transparency = o.Transparency; part.CanCollide = o.CanCollide; part.Massless = o.Massless
-                                            part.CanTouch = o.CanTouch; part.CanQuery = o.CanQuery; part.CustomPhysicalProperties = o.CustomPhysicalProperties; part.RootPriority = o.RootPriority
-                                        end
-                                    end
+                                    if State.HitboxMaster and cat == tCat and idx <= 2 then part.Massless = true; part.CanCollide = false; part.CustomPhysicalProperties = ZP; part.RootPriority = -127; part.Size = Vector3.new(tSize, tSize, tSize); part.Transparency = State.HitboxTransparency; part.CanTouch = true; part.CanQuery = true
+                                    else part.Size = o.Size; part.Transparency = o.Transparency; part.CanCollide = o.CanCollide; part.Massless = o.Massless; part.CanTouch = o.CanTouch; part.CanQuery = o.CanQuery; part.CustomPhysicalProperties = o.CustomPhysicalProperties; part.RootPriority = o.RootPriority end
                                 end
                             end
                         end
                     end
                 end
 
-                -- 2. Свой REACH
-                local myChar = LocalPlayer.Character
-                if myChar and myChar.Parent then
-                    if localCacheDirty then
-                        State.LocalOriginalParts = {}
-                        localCacheDirty = false
-                    end
-                    
-                    if State.ReachEnabled then
-                        local myGroups = Combat.ScanModel(myChar, true)
-                        local rVal = ReachSizes[State.ReachSizeLevel] or 18
-
-                        for cat, parts in pairs(myGroups) do
-                            local isCatSelected = State.ReachParts[cat] == true
-                            for _, part in ipairs(parts) do
-                                if part and part.Parent and not isCritRoot(myChar, part) then
-                                    if isCatSelected then
-                                        if not State.LocalOriginalParts[part] then
-                                            State.LocalOriginalParts[part] = { Size = part.Size, Transparency = part.Transparency, CanCollide = part.CanCollide, CanQuery = part.CanQuery, CanTouch = part.CanTouch, Massless = part.Massless, CustomPhysicalProperties = part.CustomPhysicalProperties, RootPriority = part.RootPriority }
-                                        end
-                                        local orig = State.LocalOriginalParts[part]
-                                        local targetSize = (rVal < 0) and (orig.Size * math.abs(rVal)) or Vector3.new(rVal, rVal, rVal)
-                                        
-                                        if part.Size ~= targetSize or part.Transparency ~= State.ReachTransparency then
-                                            part.Massless = true; part.CanCollide = false; part.CustomPhysicalProperties = ZP; part.RootPriority = -127
-                                            part.Size = targetSize; part.Transparency = State.ReachTransparency; part.CanTouch = true; part.CanQuery = true
-                                        end
-                                    else
-                                        local orig = State.LocalOriginalParts[part]
-                                        if orig and part.Size ~= orig.Size then
-                                            part.Size = orig.Size; part.Transparency = orig.Transparency
-                                            if State.SaveDinoPhase == "idle" then part.CanCollide = orig.CanCollide end
-                                            part.Massless = orig.Massless; part.CanTouch = orig.CanTouch; part.CanQuery = orig.CanQuery
-                                            part.CustomPhysicalProperties = orig.CustomPhysicalProperties; part.RootPriority = orig.RootPriority
-                                        end
-                                    end
+                -- Применяем Reach к закэшированным частям своего динозавра
+                if myCharParts and LocalPlayer.Character then
+                    local rVal = ReachSizes[State.ReachSizeLevel] or 18
+                    for cat, parts in pairs(myCharParts) do
+                        local isCatSelected = State.ReachParts[cat] == true
+                        for _, part in ipairs(parts) do
+                            if part and part.Parent and not isCritRoot(LocalPlayer.Character, part) then
+                                if not State.LocalOriginalParts[part] then State.LocalOriginalParts[part] = { Size = part.Size, Transparency = part.Transparency, CanCollide = part.CanCollide, CanQuery = part.CanQuery, CanTouch = part.CanTouch, Massless = part.Massless, CustomPhysicalProperties = part.CustomPhysicalProperties, RootPriority = part.RootPriority } end
+                                local orig = State.LocalOriginalParts[part]
+                                if State.ReachEnabled and isCatSelected then
+                                    part.Massless = true; part.CanCollide = false; part.CustomPhysicalProperties = ZP; part.RootPriority = -127
+                                    if rVal < 0 then part.Size = orig.Size * math.abs(rVal) else part.Size = Vector3.new(rVal, rVal, rVal) end
+                                    part.Transparency = State.ReachTransparency; part.CanTouch = true; part.CanQuery = true
+                                else
+                                    part.Size = orig.Size; part.Transparency = orig.Transparency; if State.SaveDinoPhase == "idle" then part.CanCollide = orig.CanCollide end
+                                    part.Massless = orig.Massless; part.CanTouch = orig.CanTouch; part.CanQuery = orig.CanQuery; part.CustomPhysicalProperties = orig.CustomPhysicalProperties; part.RootPriority = orig.RootPriority
                                 end
                             end
                         end
-                    else
-                        for part, orig in pairs(State.LocalOriginalParts) do
-                            pcall(function()
-                                if part and part.Parent and part.Size ~= orig.Size then
-                                    part.Size = orig.Size; part.Transparency = orig.Transparency
-                                    if State.SaveDinoPhase == "idle" then part.CanCollide = orig.CanCollide end
-                                    part.Massless = orig.Massless; part.CanTouch = orig.CanTouch; part.CanQuery = orig.CanQuery
-                                    part.CustomPhysicalProperties = orig.CustomPhysicalProperties; part.RootPriority = orig.RootPriority
-                                end
-                            end)
-                        end
-                        table.clear(State.LocalOriginalParts)
                     end
                 end
             end)
-            task.wait(0.3) -- Чуть медленнее для мобилок (было 0.2)
+            task.wait(0.2)
         end
     end)
 
@@ -537,146 +293,60 @@ function Combat.Init()
             if State.NoAttackCD then
                 pcall(function()
                     local ch = LocalPlayer.Character
-                    if ch then
-                        for _, inst in ipairs({ ch, LocalPlayer }) do
-                            local ok, at = pcall(function() return inst:GetAttributes() end)
-                            if ok and type(at) == "table" then
-                                for k, v in pairs(at) do
-                                    local kn = string.lower(k)
-                                    if (string.find(kn, "cooldown", 1, true) or string.find(kn, "attackcd", 1, true) or string.find(kn, "bitecd", 1, true) or string.find(kn, "debounce", 1, true)) and type(v) == "number" then inst:SetAttribute(k, 0)
-                                    elseif (kn == "canattack" or kn == "canbite") and type(v) == "boolean" then inst:SetAttribute(k, true) end
-                                end
-                            end
-                        end
-                    end
+                    if ch then for _, inst in ipairs({ ch, LocalPlayer }) do local ok, at = pcall(function() return inst:GetAttributes() end) if ok and type(at) == "table" then for k, v in pairs(at) do local kn = string.lower(k) if (string.find(kn, "cooldown", 1, true) or string.find(kn, "attackcd", 1, true) or string.find(kn, "bitecd", 1, true) or string.find(kn, "debounce", 1, true)) and type(v) == "number" then inst:SetAttribute(k, 0) elseif (kn == "canattack" or kn == "canbite") and type(v) == "boolean" then inst:SetAttribute(k, true) end end end end end
                 end)
             end
-            task.wait(0.15)
+            task.wait(0.1)
         end
     end)
 end
 
 function Combat.RestoreAll()
-    for p, o in pairs(State.OriginalParts) do
-        pcall(function()
-            if p and p.Parent then
-                p.Size = o.Size; p.Transparency = o.Transparency; p.CanCollide = o.CanCollide; p.CanQuery = o.CanQuery
-                p.CanTouch = o.CanTouch; p.Massless = o.Massless; p.CustomPhysicalProperties = o.CustomPhysicalProperties; p.RootPriority = o.RootPriority
-            end
-        end)
-    end
-    for p, o in pairs(State.LocalOriginalParts) do
-        pcall(function()
-            if p and p.Parent then
-                p.Size = o.Size; p.Transparency = o.Transparency; p.CanCollide = o.CanCollide; p.CanQuery = o.CanQuery
-                p.CanTouch = o.CanTouch; p.Massless = o.Massless; p.CustomPhysicalProperties = o.CustomPhysicalProperties; p.RootPriority = o.RootPriority
-            end
-        end)
-    end
+    for p, o in pairs(State.OriginalParts) do pcall(function() if p and p.Parent then p.Size = o.Size; p.Transparency = o.Transparency; p.CanCollide = o.CanCollide; p.CanQuery = o.CanQuery; p.CanTouch = o.CanTouch; p.Massless = o.Massless; p.CustomPhysicalProperties = o.CustomPhysicalProperties; p.RootPriority = o.RootPriority end end) end
+    for p, o in pairs(State.LocalOriginalParts) do pcall(function() if p and p.Parent then p.Size = o.Size; p.Transparency = o.Transparency; p.CanCollide = o.CanCollide; p.CanQuery = o.CanQuery; p.CanTouch = o.CanTouch; p.Massless = o.Massless; p.CustomPhysicalProperties = o.CustomPhysicalProperties; p.RootPriority = o.RootPriority end end) end
     table.clear(State.OriginalParts); table.clear(State.LocalOriginalParts)
 end
 
--- 7. ESP (Оптимизировано)
+-- 7. ESP
 local ESPModule = {}
 local espGuis, worldGuis, trackedWorld, stamTrack = {}, {}, {}, {}
 local worldScanDone, worldScanning = false, false
 local ESPFolder = Instance.new("Folder"); ESPFolder.Name = "PE_ESP_Container"; pcall(function() ESPFolder.Parent = Utils.GuiParent() end)
-
-local function getESPHead(c)
-    if not c or not c:IsA("Model") then return nil end
-    local h = c:FindFirstChild("Head", true); if h and h:IsA("BasePart") then return h end
-    for _, d in ipairs(c:GetDescendants()) do if d:IsA("BasePart") and string.find(string.lower(d.Name), "head", 1, true) then return d end end
-    return c.PrimaryPart or c:FindFirstChildWhichIsA("BasePart", true)
-end
-local function getDinoRoot(c)
-    if not c then return nil end
-    return c.PrimaryPart or c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("RootPart") or c:FindFirstChildWhichIsA("BasePart", true)
-end
-local function ExtractNumber(v)
-    if type(v) == "number" then return v end
-    if type(v) == "string" then return tonumber(v) or tonumber(string.match(v, "[-]?%d+%.?%d*")) end
-    return nil
-end
+local function getESPHead(c) if not c or not c:IsA("Model") then return nil end local h = c:FindFirstChild("Head", true) if h and h:IsA("BasePart") then return h end for _, d in ipairs(c:GetDescendants()) do if d:IsA("BasePart") and string.find(string.lower(d.Name), "head", 1, true) then return d end end return c.PrimaryPart or c:FindFirstChildWhichIsA("BasePart", true) end
+local function getDinoRoot(c) if not c then return nil end return c.PrimaryPart or c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("RootPart") or c:FindFirstChildWhichIsA("BasePart", true) end
+local function ExtractNumber(v) if type(v) == "number" then return v end if type(v) == "string" then return tonumber(v) or tonumber(string.match(v, "[-]?%d+%.?%d*")) end return nil end
 
 local function GetDinoStats(player, model, headPart)
-    local hp, maxHp = 100, 100; local realStam, realMaxStam = nil, nil
-    local hum = model:FindFirstChildOfClass("Humanoid")
-    if hum then hp = hum.Health; maxHp = hum.MaxHealth end
-
-    local function CheckKV(rawName, rawVal)
-        local num = ExtractNumber(rawVal); if not num then return end
-        local n = string.lower(tostring(rawName))
-        if n == "health" or n == "hp" or n == "currenthealth" then hp = num
-        elseif n == "maxhealth" or n == "maxhp" then if num > 0 then maxHp = num end
-        elseif string.find(n, "maxstam", 1, true) or string.find(n, "max_stamina", 1, true) or string.find(n, "maxenergy", 1, true) then if num > 0 then realMaxStam = num end
-        elseif string.find(n, "stam", 1, true) or n == "energy" or n == "currentstamina" then realStam = num end
-    end
-
-    for _, inst in ipairs({ model, hum, player }) do
-        if inst then
-            local ok, attrs = pcall(function() return inst:GetAttributes() end)
-            if ok and type(attrs) == "table" then for k, v in pairs(attrs) do CheckKV(k, v) end end
-        end
-    end
+    local hp, maxHp = 100, 100; local realStam, realMaxStam = nil, nil; local hum = model:FindFirstChildOfClass("Humanoid"); if hum then hp = hum.Health; maxHp = hum.MaxHealth end
+    local function CheckKV(rawName, rawVal) local num = ExtractNumber(rawVal); if not num then return end local n = string.lower(tostring(rawName)) if n == "health" or n == "hp" or n == "currenthealth" then hp = num elseif n == "maxhealth" or n == "maxhp" then if num > 0 then maxHp = num end elseif string.find(n, "maxstam", 1, true) or string.find(n, "max_stamina", 1, true) or string.find(n, "maxenergy", 1, true) then if num > 0 then realMaxStam = num end elseif string.find(n, "stam", 1, true) or n == "energy" or n == "currentstamina" then realStam = num end end
+    for _, inst in ipairs({ model, hum, player }) do if inst then local ok, attrs = pcall(function() return inst:GetAttributes() end) if ok and type(attrs) == "table" then for k, v in pairs(attrs) do CheckKV(k, v) end end end end
     for _, obj in ipairs(model:GetChildren()) do if obj:IsA("ValueBase") then pcall(function() CheckKV(obj.Name, obj.Value) end) end end
-
     if not maxHp or maxHp <= 0 then maxHp = math.max(hp, 100) end
     local maxStam = (realMaxStam and realMaxStam > 0) and realMaxStam or 100
-    local movePart = getDinoRoot(model) or headPart
-    local now = os.clock(); local pos = movePart and movePart.Position or Vector3.zero; local track = stamTrack[player]
-
-    if not track or track.char ~= model then
-        track = { char = model, stam = maxStam, smoothSpeed = 0, lastTime = now, lastPos = pos, lastSprintTime = 0, srvChanged = false, initSrv = realStam }
-        stamTrack[player] = track
+    local movePart = getDinoRoot(model) or headPart; local now = os.clock(); local pos = movePart and movePart.Position or Vector3.zero; local track = stamTrack[player]
+    if not track or track.char ~= model then track = { char = model, stam = maxStam, smoothSpeed = 0, lastTime = now, lastPos = pos, lastSprintTime = 0, srvChanged = false, initSrv = realStam } stamTrack[player] = track
     else
         if realStam and track.initSrv and math.abs(realStam - track.initSrv) > 0.5 then track.srvChanged = true end
-        if track.srvChanged and realStam then
-            track.stam = math.clamp(realStam, 0, maxStam); track.lastTime = now; track.lastPos = pos
-            return hp, maxHp, track.stam, maxStam
-        end
-        local dt = math.clamp(now - track.lastTime, 0.05, 1.0)
-        local distMoved = Vector3.new(pos.X - track.lastPos.X, 0, pos.Z - track.lastPos.Z).Magnitude
-        local posSpeed = distMoved / dt
+        if track.srvChanged and realStam then track.stam = math.clamp(realStam, 0, maxStam); track.lastTime = now; track.lastPos = pos; return hp, maxHp, track.stam, maxStam end
+        local dt = math.clamp(now - track.lastTime, 0.05, 1.0); local distMoved = Vector3.new(pos.X - track.lastPos.X, 0, pos.Z - track.lastPos.Z).Magnitude; local posSpeed = distMoved / dt
         if posSpeed > 150 then posSpeed = 0 end
-        track.smoothSpeed = (track.smoothSpeed * 0.65) + (posSpeed * 0.35)
-        local speed = track.smoothSpeed
+        track.smoothSpeed = (track.smoothSpeed * 0.65) + (posSpeed * 0.35); local speed = track.smoothSpeed
         if speed > 29 then track.stam = math.clamp(track.stam - (maxStam * 0.024 * dt), 0, maxStam); track.lastSprintTime = now
-        else
-            if (now - (track.lastSprintTime or 0)) >= 3.0 then
-                if speed > 6 then track.stam = math.clamp(track.stam + (maxStam * 0.004 * dt), 0, maxStam)
-                else track.stam = math.clamp(track.stam + (maxStam * 0.014 * dt), 0, maxStam) end
-            end
-        end
+        else if (now - (track.lastSprintTime or 0)) >= 3.0 then if speed > 6 then track.stam = math.clamp(track.stam + (maxStam * 0.004 * dt), 0, maxStam) else track.stam = math.clamp(track.stam + (maxStam * 0.014 * dt), 0, maxStam) end end end
         track.lastTime = now; track.lastPos = pos
     end
     return hp, maxHp, track.stam, maxStam
 end
 
-local function GetMyPosition()
-    local myChar = LocalPlayer.Character
-    if myChar then local ok, pivot = pcall(function() return myChar:GetPivot().Position end) if ok and pivot then return pivot end end
-    return Workspace.CurrentCamera and Workspace.CurrentCamera.CFrame.Position or Vector3.zero
-end
-local function IsPartOfPlayerCharacter(obj)
-    for _, p in ipairs(Players:GetPlayers()) do if p.Character and (obj == p.Character or obj:IsDescendantOf(p.Character)) then return true end end
-    return false
-end
-
+local function GetMyPosition() local myChar = LocalPlayer.Character if myChar then local ok, pivot = pcall(function() return myChar:GetPivot().Position end) if ok and pivot then return pivot end end return Workspace.CurrentCamera and Workspace.CurrentCamera.CFrame.Position or Vector3.zero end
+local function IsPartOfPlayerCharacter(obj) for _, p in ipairs(Players:GetPlayers()) do if p.Character and (obj == p.Character or obj:IsDescendantOf(p.Character)) then return true end end return false end
 local BoneKeywords = { "fossil", "bone", "skeleton", "amber", "relic", "digsite", "dig_site", "excavat", "skull", "remains" }
 local CorpseKeywords = { "carcass", "corpse", "deadbody", "dead_body", "meat", "gore", "chunk", "edible", "food", "prey", "ribcage", "flesh", "steak" }
--- Добавлены папки для игнора, чтобы сканер не лагал
 local IgnoredFolders = { trees = true, foliage = true, rocks = true, grass = true, plants = true, leaves = true, clouds = true, lighting = true, water = true, effects = true, particles = true, debris = true }
-
-local function MatchCategoryFromText(tx)
-    for _, k in ipairs(BoneKeywords) do if string.find(tx, k, 1, true) then return "Bone" end end
-    for _, k in ipairs(CorpseKeywords) do if string.find(tx, k, 1, true) then return "Corpse" end end
-    return nil
-end
+local function MatchCategoryFromText(tx) for _, k in ipairs(BoneKeywords) do if string.find(tx, k, 1, true) then return "Bone" end end for _, k in ipairs(CorpseKeywords) do if string.find(tx, k, 1, true) then return "Corpse" end end return nil end
 
 local function TryRegisterWorldObject(d)
-    if not d or not d.Parent or d == SaveDino.Pad then return end
-    if IsPartOfPlayerCharacter(d) then return end
-
+    if not d or not d.Parent or d == SaveDino.Pad or IsPartOfPlayerCharacter(d) then return end
     if d:IsA("ProximityPrompt") or d:IsA("ClickDetector") then
         local target = d.Parent
         if not target or target == Workspace or trackedWorld[target] then return end
@@ -684,13 +354,9 @@ local function TryRegisterWorldObject(d)
         local tx = string.lower(d.Name .. " " .. target.Name .. " " .. pName)
         if d:IsA("ProximityPrompt") then tx = tx .. " " .. string.lower(d.ActionText .. " " .. d.ObjectText) end
         local cat = MatchCategoryFromText(tx)
-        if cat then
-            local part = target:IsA("BasePart") and target or target:FindFirstAncestorWhichIsA("BasePart") or target:FindFirstChildWhichIsA("BasePart", true)
-            if part then trackedWorld[target] = { Category = cat, Part = part } end
-        end
+        if cat then local part = target:IsA("BasePart") and target or target:FindFirstAncestorWhichIsA("BasePart") or target:FindFirstChildWhichIsA("BasePart", true) if part then trackedWorld[target] = { Category = cat, Part = part } end end
         return
     end
-
     if d:IsA("Model") or d:IsA("BasePart") then
         local ancestorModel = d:FindFirstAncestorOfClass("Model")
         if ancestorModel and ancestorModel ~= Workspace and trackedWorld[ancestorModel] then return end
@@ -700,10 +366,7 @@ local function TryRegisterWorldObject(d)
         local cat = MatchCategoryFromText(fullCheck)
         if cat then
             local rootTarget = (d:IsA("BasePart") and ancestorModel and ancestorModel ~= Workspace and not IsPartOfPlayerCharacter(ancestorModel)) and ancestorModel or d
-            if not trackedWorld[rootTarget] then
-                local part = rootTarget:IsA("BasePart") and rootTarget or rootTarget.PrimaryPart or rootTarget:FindFirstChildWhichIsA("BasePart", true)
-                if part then trackedWorld[rootTarget] = { Category = cat, Part = part } end
-            end
+            if not trackedWorld[rootTarget] then local part = rootTarget:IsA("BasePart") and rootTarget or rootTarget.PrimaryPart or rootTarget:FindFirstChildWhichIsA("BasePart", true) if part then trackedWorld[rootTarget] = { Category = cat, Part = part } end end
         end
     end
 end
@@ -719,7 +382,7 @@ function ESPModule.ScanWorldItems()
             for _, child in ipairs(ch) do
                 if not State.Active then return end
                 count = count + 1
-                if count % 300 == 0 then task.wait() end
+                if count % 400 == 0 then task.wait() end
                 if child ~= Workspace.Terrain and not IsPartOfPlayerCharacter(child) then
                     TryRegisterWorldObject(child)
                     local cn = string.lower(child.Name)
@@ -740,20 +403,19 @@ function ESPModule.Cleanup()
 end
 
 function ESPModule.Init()
-    Utils.Track(Players.PlayerRemoving:Connect(function(plr)
-        if espGuis[plr] then if espGuis[plr].gui then pcall(function() espGuis[plr].gui:Destroy() end) end espGuis[plr] = nil end
-        stamTrack[plr] = nil
+    Utils.Track(Players.PlayerRemoving:Connect(function(plr) if espGuis[plr] then if espGuis[plr].gui then pcall(function() espGuis[plr].gui:Destroy() end) end espGuis[plr] = nil end stamTrack[plr] = nil end))
+    -- Оптимизация DescendantAdded: реагируем только на важные объекты
+    Utils.Track(Workspace.DescendantAdded:Connect(function(desc) 
+        if (State.ESPBones or State.ESPCorpses) and (desc:IsA("BasePart") or desc:IsA("Model") or desc:IsA("ProximityPrompt")) then 
+            task.defer(function() pcall(TryRegisterWorldObject, desc) end) 
+        end 
     end))
-    Utils.Track(Workspace.DescendantAdded:Connect(function(desc)
-        if State.ESPBones or State.ESPCorpses then task.defer(function() pcall(TryRegisterWorldObject, desc) end) end
-    end))
-
+    
     task.spawn(function()
         while State.Active do
             pcall(function()
                 local myPos = GetMyPosition()
-                if not State.ESPEnabled then
-                    for _, data in pairs(espGuis) do if data.gui then data.gui.Enabled = false end end
+                if not State.ESPEnabled then for _, data in pairs(espGuis) do if data.gui then data.gui.Enabled = false end end
                 else
                     for _, player in ipairs(Players:GetPlayers()) do
                         if player ~= LocalPlayer then
@@ -777,50 +439,35 @@ function ESPModule.Init()
                                     local hpRatio = math.clamp(hp / maxHp, 0, 1); local stamRatio = math.clamp(stam / maxStam, 0, 1)
                                     data.name.Text = string.format("[%dm] %s", math.floor(dist), player.DisplayName or player.Name)
                                     data.hpBg.Visible = State.ESP_Health
-                                    if State.ESP_Health then
-                                        data.hpFill.Size = UDim2.new(hpRatio, 0, 1, 0); data.hpText.Text = string.format("HP: %d / %d", math.floor(hp + 0.5), math.floor(maxHp + 0.5))
-                                        data.hpFill.BackgroundColor3 = (hpRatio < 0.3 and Color3.fromRGB(235, 65, 65)) or (hpRatio < 0.65 and Color3.fromRGB(240, 190, 50)) or Color3.fromRGB(60, 215, 80)
-                                    end
+                                    if State.ESP_Health then data.hpFill.Size = UDim2.new(hpRatio, 0, 1, 0); data.hpText.Text = string.format("HP: %d / %d", math.floor(hp + 0.5), math.floor(maxHp + 0.5)); data.hpFill.BackgroundColor3 = (hpRatio < 0.3 and Color3.fromRGB(235, 65, 65)) or (hpRatio < 0.65 and Color3.fromRGB(240, 190, 50)) or Color3.fromRGB(60, 215, 80) end
                                     data.stamBg.Visible = State.ESP_Stamina
-                                    if State.ESP_Stamina then
-                                        data.stamFill.Size = UDim2.new(stamRatio, 0, 1, 0); data.stamText.Text = string.format("ST: %d / %d", math.floor(stam + 0.5), math.floor(maxStam + 0.5))
-                                        data.stamFill.BackgroundColor3 = (stamRatio < 0.25 and Color3.fromRGB(245, 135, 45)) or Color3.fromRGB(50, 160, 245)
-                                    end
+                                    if State.ESP_Stamina then data.stamFill.Size = UDim2.new(stamRatio, 0, 1, 0); data.stamText.Text = string.format("ST: %d / %d", math.floor(stam + 0.5), math.floor(maxStam + 0.5)); data.stamFill.BackgroundColor3 = (stamRatio < 0.25 and Color3.fromRGB(245, 135, 45)) or Color3.fromRGB(50, 160, 245) end
                                     data.gui.Enabled = true
                                 elseif espGuis[player] and espGuis[player].gui then espGuis[player].gui.Enabled = false end
                             elseif espGuis[player] and espGuis[player].gui then espGuis[player].gui.Enabled = false end
                         end
                     end
                 end
-
                 if State.ESPBones or State.ESPCorpses then
                     if not worldScanDone and not worldScanning then ESPModule.ScanWorldItems() end
                     for obj, info in pairs(trackedWorld) do
                         local part = info.Part
-                        if not obj or not obj.Parent or not part or not part.Parent then
-                            if worldGuis[obj] and worldGuis[obj].gui then pcall(function() worldGuis[obj].gui:Destroy() end) end
-                            worldGuis[obj] = nil; trackedWorld[obj] = nil
+                        if not obj or not obj.Parent or not part or not part.Parent then if worldGuis[obj] and worldGuis[obj].gui then pcall(function() worldGuis[obj].gui:Destroy() end) end worldGuis[obj] = nil; trackedWorld[obj] = nil
                         else
-                            local isBone = (info.Category == "Bone")
-                            local show = (isBone and State.ESPBones) or (not isBone and State.ESPCorpses)
-                            local dist = (myPos - part.Position).Magnitude
+                            local isBone = (info.Category == "Bone"); local show = (isBone and State.ESPBones) or (not isBone and State.ESPCorpses); local dist = (myPos - part.Position).Magnitude
                             if show and dist <= State.WorldESPMaxDistance then
                                 if not worldGuis[obj] or not worldGuis[obj].gui or not worldGuis[obj].gui.Parent then
                                     local bGui = Instance.new("BillboardGui"); bGui.Name = "PE_WorldESP"; bGui.Size = UDim2.fromOffset(150, 26); bGui.StudsOffset = Vector3.new(0, 2.5, 0); bGui.AlwaysOnTop = true; bGui.Parent = ESPFolder
                                     local lbl = Instance.new("TextLabel"); lbl.Size = UDim2.fromScale(1, 1); lbl.BackgroundTransparency = 1; lbl.TextStrokeTransparency = 0.1; lbl.Font = Enum.Font.GothamBold; lbl.TextSize = 12; lbl.TextColor3 = isBone and Color3.fromRGB(255, 235, 150) or Color3.fromRGB(255, 110, 90); lbl.Parent = bGui
                                     worldGuis[obj] = { gui = bGui, label = lbl }
                                 end
-                                local wGui = worldGuis[obj]; wGui.gui.Adornee = part
-                                wGui.label.Text = string.format("[%dm] %s", math.floor(dist), isBone and "КОСТЬ" or "ЕДА/ТРУП")
-                                wGui.gui.Enabled = true
+                                local wGui = worldGuis[obj]; wGui.gui.Adornee = part; wGui.label.Text = string.format("[%dm] %s", math.floor(dist), isBone and "КОСТЬ" or "ЕДА/ТРУП"); wGui.gui.Enabled = true
                             elseif worldGuis[obj] and worldGuis[obj].gui then worldGuis[obj].gui.Enabled = false end
                         end
                     end
-                else
-                    for _, gData in pairs(worldGuis) do if gData.gui then gData.gui.Enabled = false end end
-                end
+                else for _, gData in pairs(worldGuis) do if gData.gui then gData.gui.Enabled = false end end end
             end)
-            task.wait(0.4) -- Снизили нагрузку на обновление ESP
+            task.wait(0.3) -- Чуть медленнее для мобилок (было 0.2)
         end
     end)
 end
@@ -862,8 +509,6 @@ local function CreateCycleButton(parent, labelPrefix, options, defaultIndex, ord
 end
 
 local CombatPage = CreateTab("Combat"); local RenderPage = CreateTab("Render"); local ToolsPage = CreateTab("Tools")
-
-local TransOptions = {0, 0.25, 0.5, 0.65, 0.75, 1}
 local TransTexts = {"0.0 (Видимый)", "0.25", "0.5", "0.65", "0.75", "1.0 (Невидимый)"}
 
 CreateToggle(CombatPage, "Reach (Дальность твоей атаки)", State.ReachEnabled, 1, function(v) State.ReachEnabled = v end)
@@ -874,7 +519,6 @@ CreateToggle(CombatPage, "[Reach] Хитбокс Головы (Head)", State.Rea
 CreateToggle(CombatPage, "[Reach] Весь Хвост целиком (Full Tail)", State.ReachParts.Tail, 6, function(v) State.ReachParts.Tail = v end)
 CreateToggle(CombatPage, "[Reach] Ноги и Лапы (Legs)", State.ReachParts.Leg, 7, function(v) State.ReachParts.Leg = v end)
 CreateToggle(CombatPage, "[Reach] Торс / Тело (Body)", State.ReachParts.Body, 8, function(v) State.ReachParts.Body = v end)
-
 CreateToggle(CombatPage, "Silent Aim", State.SilentAim, 9, function(v) State.SilentAim = v end)
 CreateCycleButton(CombatPage, "Цель Silent Aim", { "Head", "Jaw", "Body", "Tail", "Leg" }, 1, 10, function(opt) State.AimTargetPart = opt end)
 CreateToggle(CombatPage, "Enemy Hitbox Expander (Враги)", State.HitboxMaster, 11, function(v) State.HitboxMaster = v end)
@@ -893,10 +537,7 @@ CreateToggle(RenderPage, "Night Vision", State.NightVision, 7, function(v) State
 CreateToggle(RenderPage, "No Blur", State.NoBlur, 8, function(v) State.NoBlur = v end)
 CreateToggle(RenderPage, "No Sleep Screen", State.NoSleepScreen, 9, function(v) State.NoSleepScreen = v end)
 
-CreateToggle(ToolsPage, "Auto Clean (Вшитый пакет мытья)", State.AutoClean, 1, function(v)
-    State.AutoClean = v
-    if v then Utils.Notify("Auto Clean", "Пакетное мытье активировано!") end
-end)
+CreateToggle(ToolsPage, "Auto Clean (Вшитый пакет мытья)", State.AutoClean, 1, function(v) State.AutoClean = v; if v then Utils.Notify("Auto Clean", "Пакетное мытье активировано!") end end)
 CreateToggle(ToolsPage, "Save Dino", false, 2, function(v) SaveDino.SetEnabled(v) end)
 CreateCycleButton(ToolsPage, "Направление Save Dino", { "Down", "Up" }, 1, 3, function(_, idx) State.SaveDinoMode = (idx == 1) and "Down" or "Up"; SaveDino.RecalculateTarget(); if State.SaveDinoPhase == "holding" then State.SaveDinoPhase = "moving_to_safe" end end)
 CreateCycleButton(ToolsPage, "Глубина Save Dino", { 50, 70, 95, 120 }, 2, 4, function(val) State.SaveDinoOffset = val; SaveDino.RecalculateTarget(); if State.SaveDinoPhase == "holding" then State.SaveDinoPhase = "moving_to_safe" end end)
