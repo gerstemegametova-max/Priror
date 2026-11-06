@@ -1,5 +1,5 @@
--- Prior Extinction // Ultimate Compact (Multi-Part Reach + Stamina + AutoClean + World ESP)
-print("[PE] Запуск скрипта с функцией Reach...")
+-- Prior Extinction // Ultimate Compact (Mobile Optimized + Reach + ESP)
+print("[PE] Запуск оптимизированного скрипта...")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -23,15 +23,9 @@ local State = {
     NoAttackCD = false,
     -- Reach (Свой хитбокс атаки с мульти-выбором)
     ReachEnabled = false,
-    ReachSizeLevel = 3, -- По умолчанию: 18 студов
+    ReachSizeLevel = 3, 
     ReachTransparency = 0.75,
-    ReachParts = {
-        Jaw = true,
-        Head = true,
-        Tail = false,
-        Leg = false,
-        Body = false,
-    },
+    ReachParts = { Jaw = true, Head = true, Tail = false, Leg = false, Body = false },
     -- Render
     ESPEnabled = false, ESPMaxDistance = 2000, ESP_Health = true, ESP_Stamina = true,
     ESPBones = false, ESPCorpses = false, WorldESPMaxDistance = 2000,
@@ -62,7 +56,6 @@ local Theme = {
 }
 
 local HitboxSizes = { 10, 16, 22, 28, 35 }
--- Варианты Reach: 1 = уменьшение (0.5x), 2..6 = увеличение радиуса укуса/удара
 local ReachSizes = { -0.5, 10, 18, 26, 36, 50 }
 
 local PartPatterns = {
@@ -121,23 +114,32 @@ function Utils.DeepClone(tbl, seen)
     return copy
 end
 
--- 3. Visuals
+-- 3. Visuals (Оптимизировано: проверка на изменение)
 local Visuals = {}
+local lastNightVision, lastNoBlur = false, false
 function Visuals.Init()
     Utils.Track(RunService.Heartbeat:Connect(function()
         if not State.Active then return end
-        if State.NightVision then
-            Lighting.Ambient = Color3.fromRGB(255, 255, 255); Lighting.OutdoorAmbient = Color3.fromRGB(255, 255, 255)
-            Lighting.Brightness = 3; Lighting.GlobalShadows = false
-        else
-            Lighting.Ambient = LO.Ambient; Lighting.OutdoorAmbient = LO.OutdoorAmbient
-            Lighting.Brightness = LO.Brightness; Lighting.GlobalShadows = LO.GlobalShadows
-        end
-        if State.NoBlur then
-            for _, e in ipairs(Lighting:GetChildren()) do
-                if e:IsA("BlurEffect") or e:IsA("DepthOfFieldEffect") then e.Enabled = false end
+        if State.NightVision ~= lastNightVision then
+            lastNightVision = State.NightVision
+            if State.NightVision then
+                Lighting.Ambient = Color3.fromRGB(255, 255, 255); Lighting.OutdoorAmbient = Color3.fromRGB(255, 255, 255)
+                Lighting.Brightness = 3; Lighting.GlobalShadows = false
+            else
+                Lighting.Ambient = LO.Ambient; Lighting.OutdoorAmbient = LO.OutdoorAmbient
+                Lighting.Brightness = LO.Brightness; Lighting.GlobalShadows = LO.GlobalShadows
             end
         end
+        
+        if State.NoBlur ~= lastNoBlur then
+            lastNoBlur = State.NoBlur
+            if State.NoBlur then
+                for _, e in ipairs(Lighting:GetChildren()) do
+                    if e:IsA("BlurEffect") or e:IsA("DepthOfFieldEffect") then e.Enabled = false end
+                end
+            end
+        end
+        
         if State.NoSleepScreen then
             for _, e in ipairs(Lighting:GetChildren()) do
                 if e:IsA("ColorCorrectionEffect") and (e.Brightness < -0.2 or e.TintColor == Color3.new(0, 0, 0)) then
@@ -152,17 +154,13 @@ function Visuals.Restore()
     Lighting.Brightness = LO.Brightness; Lighting.GlobalShadows = LO.GlobalShadows; Lighting.ClockTime = LO.ClockTime
 end
 
--- 4. Survival (Вшитый + Авто-обновляемый пакет Auto Clean)
+-- 4. Survival
 local Survival = {}
 local DataRemote = nil
-
 local function FindDataRemote()
     if DataRemote and DataRemote.Parent then return DataRemote end
     local found = ReplicatedStorage:FindFirstChild("dataRemoteEvent", true)
-    if found and found:IsA("RemoteEvent") then
-        DataRemote = found
-        return found
-    end
+    if found and found:IsA("RemoteEvent") then DataRemote = found; return found end
     return nil
 end
 
@@ -177,11 +175,7 @@ function Survival.Init()
                         local rem = FindDataRemote()
                         if rem then
                             local packet = {
-                                [1] = {
-                                    [1] = CLEAN_PREFIX_BYTE,
-                                    [2] = CLEAN_BRIDGE_ID,
-                                    [3] = { DEFAULT_WATER_COORDS[1], DEFAULT_WATER_COORDS[2], DEFAULT_WATER_COORDS[3] }
-                                },
+                                [1] = { [1] = CLEAN_PREFIX_BYTE, [2] = CLEAN_BRIDGE_ID, [3] = { DEFAULT_WATER_COORDS[1], DEFAULT_WATER_COORDS[2], DEFAULT_WATER_COORDS[3] } },
                                 [2] = CLEAN_ACTION_BYTE
                             }
                             rem:FireServer(packet)
@@ -291,20 +285,18 @@ function SaveDino.Init()
     end))
 end
 
--- 6. Combat (Silent Aim + Enemy Hitbox + Local Multi-Part Reach)
+-- 6. Combat (Mobile Optimized)
 local Combat = {}
 local ZP = PhysicalProperties.new(0.0001, 0, 0, 0, 0)
+local localCacheDirty = true
 
--- Если fullTail == true (для своего Reach), то захватывается ВЕСЬ хвост от начала до самого кончика
 local function matchCat(n, fullTail)
     local l = string.lower(n)
     for _, c in ipairs({ "Jaw", "Head", "Tail", "Leg", "Body" }) do
         for _, p in ipairs(PartPatterns[c]) do
             if string.find(l, p, 1, true) then
                 if c == "Tail" and not fullTail then
-                    if string.find(l, "tip", 1, true) or string.match(l, "tail[_%s]*[3-9]") then
-                        return nil
-                    end
+                    if string.find(l, "tip", 1, true) or string.match(l, "tail[_%s]*[3-9]") then return nil end
                 end
                 return c
             end
@@ -314,7 +306,6 @@ local function matchCat(n, fullTail)
 end
 
 local function isLocal(m) return LocalPlayer.Character and (m == LocalPlayer.Character or m:IsDescendantOf(LocalPlayer.Character)) end
-
 local function isCritRoot(model, part)
     if not part or not model then return true end
     local l = string.lower(part.Name)
@@ -322,14 +313,12 @@ local function isCritRoot(model, part)
     local ok, ar = pcall(function() return part.AssemblyRootPart end)
     return ok and ar == part
 end
-
 local function findPart(model, cat)
     local c = State.CachedModels[model]
     if c and c[cat] then for _, p in ipairs(c[cat]) do if p and p.Parent then return p end end end
     for _, d in ipairs(model:GetDescendants()) do if d:IsA("BasePart") and matchCat(d.Name, false) == cat then return d end end
     return nil
 end
-
 local function getEnemy(part)
     if not part or not part:IsA("BasePart") or isLocal(part) then return nil end
     local cur = part.Parent
@@ -348,9 +337,7 @@ function Combat.ScanModel(model, isSelf)
         for _, d in ipairs(model:GetDescendants()) do
             if d:IsA("BasePart") and not isCritRoot(model, d) then
                 local c = matchCat(d.Name, isSelf)
-                if c and cats[c] then
-                    table.insert(cats[c], d)
-                end
+                if c and cats[c] then table.insert(cats[c], d) end
             end
         end
         if #cats.Body == 0 then
@@ -398,9 +385,7 @@ if not Env.PriorUI_HookInstalled then
                     end)
                 end
 
-                if cs.SaveDinoPhase ~= "idle" and string.find(string.lower(rName), "fall", 1, true) then
-                    return nil
-                end
+                if cs.SaveDinoPhase ~= "idle" and string.find(string.lower(rName), "fall", 1, true) then return nil end
 
                 if cs.SilentAim then
                     local modified = false
@@ -439,22 +424,24 @@ if not Env.PriorUI_HookInstalled then
 end
 
 function Combat.Init()
+    Utils.Track(LocalPlayer.CharacterAdded:Connect(function() 
+        localCacheDirty = true 
+        State.LocalOriginalParts = {}
+    end))
+
     task.spawn(function()
         while State.Active do
             pcall(function()
                 local nc = {}
                 for _, p in ipairs(Players:GetPlayers()) do
-                    if p ~= LocalPlayer and p.Character then
-                        nc[p.Character] = Combat.ScanModel(p.Character, false)
-                    end
+                    if p ~= LocalPlayer and p.Character then nc[p.Character] = Combat.ScanModel(p.Character, false) end
                 end
                 State.CachedModels = nc
             end)
-            task.wait(1)
+            task.wait(1.5) -- Реже обновляем список игроков
         end
     end)
 
-    -- Цикл обработки вражеских хитбоксов и твоего собственного Reach (с мульти-выбором частей тела)
     task.spawn(function()
         while State.Active do
             pcall(function()
@@ -467,19 +454,19 @@ function Combat.Init()
                             for idx, part in ipairs(parts) do
                                 if part and part.Parent and not isCritRoot(model, part) then
                                     if not State.OriginalParts[part] then
-                                        State.OriginalParts[part] = {
-                                            Size = part.Size, Transparency = part.Transparency, CanCollide = part.CanCollide,
-                                            CanQuery = part.CanQuery, CanTouch = part.CanTouch, Massless = part.Massless,
-                                            CustomPhysicalProperties = part.CustomPhysicalProperties, RootPriority = part.RootPriority
-                                        }
+                                        State.OriginalParts[part] = { Size = part.Size, Transparency = part.Transparency, CanCollide = part.CanCollide, CanQuery = part.CanQuery, CanTouch = part.CanTouch, Massless = part.Massless, CustomPhysicalProperties = part.CustomPhysicalProperties, RootPriority = part.RootPriority }
                                     end
                                     local o = State.OriginalParts[part]
                                     if State.HitboxMaster and cat == tCat and idx <= 2 then
-                                        part.Massless = true; part.CanCollide = false; part.CustomPhysicalProperties = ZP; part.RootPriority = -127
-                                        part.Size = Vector3.new(tSize, tSize, tSize); part.Transparency = State.HitboxTransparency; part.CanTouch = true; part.CanQuery = true
+                                        if part.Size ~= Vector3.new(tSize, tSize, tSize) then
+                                            part.Massless = true; part.CanCollide = false; part.CustomPhysicalProperties = ZP; part.RootPriority = -127
+                                            part.Size = Vector3.new(tSize, tSize, tSize); part.Transparency = State.HitboxTransparency; part.CanTouch = true; part.CanQuery = true
+                                        end
                                     else
-                                        part.Size = o.Size; part.Transparency = o.Transparency; part.CanCollide = o.CanCollide; part.Massless = o.Massless
-                                        part.CanTouch = o.CanTouch; part.CanQuery = o.CanQuery; part.CustomPhysicalProperties = o.CustomPhysicalProperties; part.RootPriority = o.RootPriority
+                                        if part.Size ~= o.Size then
+                                            part.Size = o.Size; part.Transparency = o.Transparency; part.CanCollide = o.CanCollide; part.Massless = o.Massless
+                                            part.CanTouch = o.CanTouch; part.CanQuery = o.CanQuery; part.CustomPhysicalProperties = o.CustomPhysicalProperties; part.RootPriority = o.RootPriority
+                                        end
                                     end
                                 end
                             end
@@ -487,57 +474,61 @@ function Combat.Init()
                     end
                 end
 
-                -- 2. Твой собственный REACH (Мульти-выбор: Челюсть, Голова, Весь хвост от начала до конца, Ноги, Тело)
+                -- 2. Свой REACH
                 local myChar = LocalPlayer.Character
                 if myChar and myChar.Parent then
-                    local myGroups = Combat.ScanModel(myChar, true) -- true = захватывает весь хвост целиком
-                    local rVal = ReachSizes[State.ReachSizeLevel] or 18
+                    if localCacheDirty then
+                        State.LocalOriginalParts = {}
+                        localCacheDirty = false
+                    end
+                    
+                    if State.ReachEnabled then
+                        local myGroups = Combat.ScanModel(myChar, true)
+                        local rVal = ReachSizes[State.ReachSizeLevel] or 18
 
-                    for cat, parts in pairs(myGroups) do
-                        local isCatSelected = State.ReachParts[cat] == true
-                        for _, part in ipairs(parts) do
-                            if part and part.Parent and not isCritRoot(myChar, part) then
-                                if not State.LocalOriginalParts[part] then
-                                    State.LocalOriginalParts[part] = {
-                                        Size = part.Size, Transparency = part.Transparency, CanCollide = part.CanCollide,
-                                        CanQuery = part.CanQuery, CanTouch = part.CanTouch, Massless = part.Massless,
-                                        CustomPhysicalProperties = part.CustomPhysicalProperties, RootPriority = part.RootPriority
-                                    }
-                                end
-                                local orig = State.LocalOriginalParts[part]
-                                if State.ReachEnabled and isCatSelected then
-                                    part.Massless = true
-                                    part.CanCollide = false
-                                    part.CustomPhysicalProperties = ZP
-                                    part.RootPriority = -127
-                                    if rVal < 0 then
-                                        -- Режим уменьшения своего хитбокса (0.5x)
-                                        part.Size = orig.Size * math.abs(rVal)
+                        for cat, parts in pairs(myGroups) do
+                            local isCatSelected = State.ReachParts[cat] == true
+                            for _, part in ipairs(parts) do
+                                if part and part.Parent and not isCritRoot(myChar, part) then
+                                    if isCatSelected then
+                                        if not State.LocalOriginalParts[part] then
+                                            State.LocalOriginalParts[part] = { Size = part.Size, Transparency = part.Transparency, CanCollide = part.CanCollide, CanQuery = part.CanQuery, CanTouch = part.CanTouch, Massless = part.Massless, CustomPhysicalProperties = part.CustomPhysicalProperties, RootPriority = part.RootPriority }
+                                        end
+                                        local orig = State.LocalOriginalParts[part]
+                                        local targetSize = (rVal < 0) and (orig.Size * math.abs(rVal)) or Vector3.new(rVal, rVal, rVal)
+                                        
+                                        if part.Size ~= targetSize or part.Transparency ~= State.ReachTransparency then
+                                            part.Massless = true; part.CanCollide = false; part.CustomPhysicalProperties = ZP; part.RootPriority = -127
+                                            part.Size = targetSize; part.Transparency = State.ReachTransparency; part.CanTouch = true; part.CanQuery = true
+                                        end
                                     else
-                                        -- Режим увеличения дистанции укуса/удара (Reach)
-                                        part.Size = Vector3.new(rVal, rVal, rVal)
+                                        local orig = State.LocalOriginalParts[part]
+                                        if orig and part.Size ~= orig.Size then
+                                            part.Size = orig.Size; part.Transparency = orig.Transparency
+                                            if State.SaveDinoPhase == "idle" then part.CanCollide = orig.CanCollide end
+                                            part.Massless = orig.Massless; part.CanTouch = orig.CanTouch; part.CanQuery = orig.CanQuery
+                                            part.CustomPhysicalProperties = orig.CustomPhysicalProperties; part.RootPriority = orig.RootPriority
+                                        end
                                     end
-                                    part.Transparency = State.ReachTransparency
-                                    part.CanTouch = true
-                                    part.CanQuery = true
-                                else
-                                    part.Size = orig.Size
-                                    part.Transparency = orig.Transparency
-                                    if State.SaveDinoPhase == "idle" then
-                                        part.CanCollide = orig.CanCollide
-                                    end
-                                    part.Massless = orig.Massless
-                                    part.CanTouch = orig.CanTouch
-                                    part.CanQuery = orig.CanQuery
-                                    part.CustomPhysicalProperties = orig.CustomPhysicalProperties
-                                    part.RootPriority = orig.RootPriority
                                 end
                             end
                         end
+                    else
+                        for part, orig in pairs(State.LocalOriginalParts) do
+                            pcall(function()
+                                if part and part.Parent and part.Size ~= orig.Size then
+                                    part.Size = orig.Size; part.Transparency = orig.Transparency
+                                    if State.SaveDinoPhase == "idle" then part.CanCollide = orig.CanCollide end
+                                    part.Massless = orig.Massless; part.CanTouch = orig.CanTouch; part.CanQuery = orig.CanQuery
+                                    part.CustomPhysicalProperties = orig.CustomPhysicalProperties; part.RootPriority = orig.RootPriority
+                                end
+                            end)
+                        end
+                        table.clear(State.LocalOriginalParts)
                     end
                 end
             end)
-            task.wait(0.2)
+            task.wait(0.3) -- Чуть медленнее для мобилок (было 0.2)
         end
     end)
 
@@ -560,7 +551,7 @@ function Combat.Init()
                     end
                 end)
             end
-            task.wait(0.08)
+            task.wait(0.15)
         end
     end)
 end
@@ -582,11 +573,10 @@ function Combat.RestoreAll()
             end
         end)
     end
-    table.clear(State.OriginalParts)
-    table.clear(State.LocalOriginalParts)
+    table.clear(State.OriginalParts); table.clear(State.LocalOriginalParts)
 end
 
--- 7. ESP (Плавная стамина + поиск Еды/Трупов и Костей)
+-- 7. ESP (Оптимизировано)
 local ESPModule = {}
 local espGuis, worldGuis, trackedWorld, stamTrack = {}, {}, {}, {}
 local worldScanDone, worldScanning = false, false
@@ -594,8 +584,7 @@ local ESPFolder = Instance.new("Folder"); ESPFolder.Name = "PE_ESP_Container"; p
 
 local function getESPHead(c)
     if not c or not c:IsA("Model") then return nil end
-    local h = c:FindFirstChild("Head", true)
-    if h and h:IsA("BasePart") then return h end
+    local h = c:FindFirstChild("Head", true); if h and h:IsA("BasePart") then return h end
     for _, d in ipairs(c:GetDescendants()) do if d:IsA("BasePart") and string.find(string.lower(d.Name), "head", 1, true) then return d end end
     return c.PrimaryPart or c:FindFirstChildWhichIsA("BasePart", true)
 end
@@ -610,8 +599,7 @@ local function ExtractNumber(v)
 end
 
 local function GetDinoStats(player, model, headPart)
-    local hp, maxHp = 100, 100
-    local realStam, realMaxStam = nil, nil
+    local hp, maxHp = 100, 100; local realStam, realMaxStam = nil, nil
     local hum = model:FindFirstChildOfClass("Humanoid")
     if hum then hp = hum.Health; maxHp = hum.MaxHealth end
 
@@ -634,11 +622,8 @@ local function GetDinoStats(player, model, headPart)
 
     if not maxHp or maxHp <= 0 then maxHp = math.max(hp, 100) end
     local maxStam = (realMaxStam and realMaxStam > 0) and realMaxStam or 100
-
     local movePart = getDinoRoot(model) or headPart
-    local now = os.clock()
-    local pos = movePart and movePart.Position or Vector3.zero
-    local track = stamTrack[player]
+    local now = os.clock(); local pos = movePart and movePart.Position or Vector3.zero; local track = stamTrack[player]
 
     if not track or track.char ~= model then
         track = { char = model, stam = maxStam, smoothSpeed = 0, lastTime = now, lastPos = pos, lastSprintTime = 0, srvChanged = false, initSrv = realStam }
@@ -646,29 +631,20 @@ local function GetDinoStats(player, model, headPart)
     else
         if realStam and track.initSrv and math.abs(realStam - track.initSrv) > 0.5 then track.srvChanged = true end
         if track.srvChanged and realStam then
-            track.stam = math.clamp(realStam, 0, maxStam)
-            track.lastTime = now; track.lastPos = pos
+            track.stam = math.clamp(realStam, 0, maxStam); track.lastTime = now; track.lastPos = pos
             return hp, maxHp, track.stam, maxStam
         end
-
         local dt = math.clamp(now - track.lastTime, 0.05, 1.0)
         local distMoved = Vector3.new(pos.X - track.lastPos.X, 0, pos.Z - track.lastPos.Z).Magnitude
         local posSpeed = distMoved / dt
         if posSpeed > 150 then posSpeed = 0 end
-
         track.smoothSpeed = (track.smoothSpeed * 0.65) + (posSpeed * 0.35)
         local speed = track.smoothSpeed
-
-        if speed > 29 then
-            track.stam = math.clamp(track.stam - (maxStam * 0.024 * dt), 0, maxStam)
-            track.lastSprintTime = now
+        if speed > 29 then track.stam = math.clamp(track.stam - (maxStam * 0.024 * dt), 0, maxStam); track.lastSprintTime = now
         else
             if (now - (track.lastSprintTime or 0)) >= 3.0 then
-                if speed > 6 then
-                    track.stam = math.clamp(track.stam + (maxStam * 0.004 * dt), 0, maxStam)
-                else
-                    track.stam = math.clamp(track.stam + (maxStam * 0.014 * dt), 0, maxStam)
-                end
+                if speed > 6 then track.stam = math.clamp(track.stam + (maxStam * 0.004 * dt), 0, maxStam)
+                else track.stam = math.clamp(track.stam + (maxStam * 0.014 * dt), 0, maxStam) end
             end
         end
         track.lastTime = now; track.lastPos = pos
@@ -688,15 +664,12 @@ end
 
 local BoneKeywords = { "fossil", "bone", "skeleton", "amber", "relic", "digsite", "dig_site", "excavat", "skull", "remains" }
 local CorpseKeywords = { "carcass", "corpse", "deadbody", "dead_body", "meat", "gore", "chunk", "edible", "food", "prey", "ribcage", "flesh", "steak" }
-local IgnoredFolders = { trees = true, foliage = true, rocks = true, grass = true, plants = true, leaves = true, clouds = true, lighting = true, water = true }
+-- Добавлены папки для игнора, чтобы сканер не лагал
+local IgnoredFolders = { trees = true, foliage = true, rocks = true, grass = true, plants = true, leaves = true, clouds = true, lighting = true, water = true, effects = true, particles = true, debris = true }
 
 local function MatchCategoryFromText(tx)
-    for _, k in ipairs(BoneKeywords) do
-        if string.find(tx, k, 1, true) then return "Bone" end
-    end
-    for _, k in ipairs(CorpseKeywords) do
-        if string.find(tx, k, 1, true) then return "Corpse" end
-    end
+    for _, k in ipairs(BoneKeywords) do if string.find(tx, k, 1, true) then return "Bone" end end
+    for _, k in ipairs(CorpseKeywords) do if string.find(tx, k, 1, true) then return "Corpse" end end
     return nil
 end
 
@@ -709,9 +682,7 @@ local function TryRegisterWorldObject(d)
         if not target or target == Workspace or trackedWorld[target] then return end
         local pName = target.Parent and target.Parent ~= Workspace and target.Parent.Name or ""
         local tx = string.lower(d.Name .. " " .. target.Name .. " " .. pName)
-        if d:IsA("ProximityPrompt") then
-            tx = tx .. " " .. string.lower(d.ActionText .. " " .. d.ObjectText)
-        end
+        if d:IsA("ProximityPrompt") then tx = tx .. " " .. string.lower(d.ActionText .. " " .. d.ObjectText) end
         local cat = MatchCategoryFromText(tx)
         if cat then
             local part = target:IsA("BasePart") and target or target:FindFirstAncestorWhichIsA("BasePart") or target:FindFirstChildWhichIsA("BasePart", true)
@@ -723,19 +694,15 @@ local function TryRegisterWorldObject(d)
     if d:IsA("Model") or d:IsA("BasePart") then
         local ancestorModel = d:FindFirstAncestorOfClass("Model")
         if ancestorModel and ancestorModel ~= Workspace and trackedWorld[ancestorModel] then return end
-
         local parentName = (d.Parent and d.Parent ~= Workspace) and string.lower(d.Parent.Name) or ""
         local grandParentName = (d.Parent and d.Parent.Parent and d.Parent.Parent ~= Workspace) and string.lower(d.Parent.Parent.Name) or ""
         local fullCheck = string.lower(d.Name) .. " " .. parentName .. " " .. grandParentName
-
         local cat = MatchCategoryFromText(fullCheck)
         if cat then
             local rootTarget = (d:IsA("BasePart") and ancestorModel and ancestorModel ~= Workspace and not IsPartOfPlayerCharacter(ancestorModel)) and ancestorModel or d
             if not trackedWorld[rootTarget] then
                 local part = rootTarget:IsA("BasePart") and rootTarget or rootTarget.PrimaryPart or rootTarget:FindFirstChildWhichIsA("BasePart", true)
-                if part then
-                    trackedWorld[rootTarget] = { Category = cat, Part = part }
-                end
+                if part then trackedWorld[rootTarget] = { Category = cat, Part = part } end
             end
         end
     end
@@ -752,19 +719,16 @@ function ESPModule.ScanWorldItems()
             for _, child in ipairs(ch) do
                 if not State.Active then return end
                 count = count + 1
-                if count % 350 == 0 then task.wait() end
+                if count % 300 == 0 then task.wait() end
                 if child ~= Workspace.Terrain and not IsPartOfPlayerCharacter(child) then
                     TryRegisterWorldObject(child)
                     local cn = string.lower(child.Name)
-                    if not IgnoredFolders[cn] and not trackedWorld[child] then
-                        scanNode(child)
-                    end
+                    if not IgnoredFolders[cn] and not trackedWorld[child] then scanNode(child) end
                 end
             end
         end
         scanNode(Workspace)
-        worldScanDone = true
-        worldScanning = false
+        worldScanDone = true; worldScanning = false
     end)
 end
 
@@ -781,9 +745,7 @@ function ESPModule.Init()
         stamTrack[plr] = nil
     end))
     Utils.Track(Workspace.DescendantAdded:Connect(function(desc)
-        if State.ESPBones or State.ESPCorpses then
-            task.defer(function() pcall(TryRegisterWorldObject, desc) end)
-        end
+        if State.ESPBones or State.ESPCorpses then task.defer(function() pcall(TryRegisterWorldObject, desc) end) end
     end))
 
     task.spawn(function()
@@ -858,7 +820,7 @@ function ESPModule.Init()
                     for _, gData in pairs(worldGuis) do if gData.gui then gData.gui.Enabled = false end end
                 end
             end)
-            task.wait(0.2)
+            task.wait(0.4) -- Снизили нагрузку на обновление ESP
         end
     end)
 end
@@ -901,21 +863,25 @@ end
 
 local CombatPage = CreateTab("Combat"); local RenderPage = CreateTab("Render"); local ToolsPage = CreateTab("Tools")
 
--- Вкладка Combat: Silent Aim + Вражеский Hitbox + Свой Reach (с мульти-выбором)
+local TransOptions = {0, 0.25, 0.5, 0.65, 0.75, 1}
+local TransTexts = {"0.0 (Видимый)", "0.25", "0.5", "0.65", "0.75", "1.0 (Невидимый)"}
+
 CreateToggle(CombatPage, "Reach (Дальность твоей атаки)", State.ReachEnabled, 1, function(v) State.ReachEnabled = v end)
 CreateCycleButton(CombatPage, "Размер Reach (Уменьш. / Увелич.)", { "0.5x (Уменьш.)", "1 (10м)", "2 (18м)", "3 (26м)", "4 (36м)", "5 (50м)" }, State.ReachSizeLevel, 2, function(_, idx) State.ReachSizeLevel = idx end)
-CreateToggle(CombatPage, "[Reach] Челюсть / Укус (Jaw)", State.ReachParts.Jaw, 3, function(v) State.ReachParts.Jaw = v end)
-CreateToggle(CombatPage, "[Reach] Хитбокс Головы (Head)", State.ReachParts.Head, 4, function(v) State.ReachParts.Head = v end)
-CreateToggle(CombatPage, "[Reach] Весь Хвост целиком (Full Tail)", State.ReachParts.Tail, 5, function(v) State.ReachParts.Tail = v end)
-CreateToggle(CombatPage, "[Reach] Ноги и Лапы (Legs)", State.ReachParts.Leg, 6, function(v) State.ReachParts.Leg = v end)
-CreateToggle(CombatPage, "[Reach] Торс / Тело (Body)", State.ReachParts.Body, 7, function(v) State.ReachParts.Body = v end)
+CreateCycleButton(CombatPage, "Прозрачность Reach", TransTexts, 5, 3, function(val) State.ReachTransparency = val end)
+CreateToggle(CombatPage, "[Reach] Челюсть / Укус (Jaw)", State.ReachParts.Jaw, 4, function(v) State.ReachParts.Jaw = v end)
+CreateToggle(CombatPage, "[Reach] Хитбокс Головы (Head)", State.ReachParts.Head, 5, function(v) State.ReachParts.Head = v end)
+CreateToggle(CombatPage, "[Reach] Весь Хвост целиком (Full Tail)", State.ReachParts.Tail, 6, function(v) State.ReachParts.Tail = v end)
+CreateToggle(CombatPage, "[Reach] Ноги и Лапы (Legs)", State.ReachParts.Leg, 7, function(v) State.ReachParts.Leg = v end)
+CreateToggle(CombatPage, "[Reach] Торс / Тело (Body)", State.ReachParts.Body, 8, function(v) State.ReachParts.Body = v end)
 
-CreateToggle(CombatPage, "Silent Aim", State.SilentAim, 8, function(v) State.SilentAim = v end)
-CreateCycleButton(CombatPage, "Цель Silent Aim", { "Head", "Jaw", "Body", "Tail", "Leg" }, 1, 9, function(opt) State.AimTargetPart = opt end)
-CreateToggle(CombatPage, "Enemy Hitbox Expander (Враги)", State.HitboxMaster, 10, function(v) State.HitboxMaster = v end)
-CreateCycleButton(CombatPage, "Часть тела Врага", { "Head", "Jaw", "Body", "Tail", "Leg" }, 1, 11, function(opt) State.SelectedHitboxPart = opt end)
-CreateCycleButton(CombatPage, "Размер Хитбокса Врага", { "1 (10)", "2 (16)", "3 (22)", "4 (28)", "5 (35)" }, State.HitboxSizeLevel, 12, function(_, idx) State.HitboxSizeLevel = idx end)
-CreateToggle(CombatPage, "No Attack CD", State.NoAttackCD, 13, function(v) State.NoAttackCD = v end)
+CreateToggle(CombatPage, "Silent Aim", State.SilentAim, 9, function(v) State.SilentAim = v end)
+CreateCycleButton(CombatPage, "Цель Silent Aim", { "Head", "Jaw", "Body", "Tail", "Leg" }, 1, 10, function(opt) State.AimTargetPart = opt end)
+CreateToggle(CombatPage, "Enemy Hitbox Expander (Враги)", State.HitboxMaster, 11, function(v) State.HitboxMaster = v end)
+CreateCycleButton(CombatPage, "Часть тела Врага", { "Head", "Jaw", "Body", "Tail", "Leg" }, 1, 12, function(opt) State.SelectedHitboxPart = opt end)
+CreateCycleButton(CombatPage, "Размер Хитбокса Врага", { "1 (10)", "2 (16)", "3 (22)", "4 (28)", "5 (35)" }, State.HitboxSizeLevel, 13, function(_, idx) State.HitboxSizeLevel = idx end)
+CreateCycleButton(CombatPage, "Прозрачность Хитбокса Врага", TransTexts, 4, 14, function(val) State.HitboxTransparency = val end)
+CreateToggle(CombatPage, "No Attack CD", State.NoAttackCD, 15, function(v) State.NoAttackCD = v end)
 
 CreateToggle(RenderPage, "ESP Игроков (Цифры в полосках)", State.ESPEnabled, 1, function(v) State.ESPEnabled = v end)
 CreateToggle(RenderPage, "Показывать Полоску HP", State.ESP_Health, 2, function(v) State.ESP_Health = v end)
