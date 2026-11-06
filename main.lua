@@ -1,5 +1,5 @@
--- Prior Extinction // Ultimate Compact (Fixed Stamina Drain + Built-In Packet AutoClean + Fixed Corpse/Bone ESP)
-print("[PE] Запуск обновленного скрипта...")
+-- Prior Extinction // Ultimate Compact (Fixed Syntax Line 639 + Stamina + AutoClean + World ESP)
+print("[PE] Запуск исправленного скрипта...")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -30,7 +30,6 @@ local State = {
 }
 Env.PriorUI_State = State
 
--- Вшитые байты пакета мытья из твоего дампа BridgeNet2 (работает сразу без захода в воду!)
 local CLEAN_ACTION_BYTE = string.char(136)
 local CLEAN_PREFIX_BYTE = string.char(1)
 local CLEAN_BRIDGE_ID = string.char(202, 62, 227, 254, 171, 38, 70, 171, 180, 233, 209, 163, 17, 33, 119, 42)
@@ -135,7 +134,7 @@ function Visuals.Restore()
     Lighting.Brightness = LO.Brightness; Lighting.GlobalShadows = LO.GlobalShadows; Lighting.ClockTime = LO.ClockTime
 end
 
--- 4. Survival (Вшитый + Авто-обновляемый пакет Auto Clean через dataRemoteEvent)
+-- 4. Survival (Вшитый + Авто-обновляемый пакет Auto Clean)
 local Survival = {}
 local DataRemote = nil
 
@@ -154,11 +153,9 @@ function Survival.Init()
         while State.Active do
             if State.AutoClean then
                 pcall(function()
-                    -- 1. Если хук уже перехватил свежий пакет на этом сервере, шлем его
                     if Env.PE_CapturedCleanPacket and Env.PE_CapturedCleanPacket.Remote then
                         Env.PE_CapturedCleanPacket.Remote:FireServer(table.unpack(Utils.DeepClone(Env.PE_CapturedCleanPacket.Args)))
                     else
-                        -- 2. Иначе сразу шлем вшитый пакет мытья из твоего дампа BridgeNet2
                         local rem = FindDataRemote()
                         if rem then
                             local packet = {
@@ -276,7 +273,7 @@ function SaveDino.Init()
     end))
 end
 
--- 6. Combat + Прямой перехват пакета мытья по структуре таблицы (без ожидания логов!)
+-- 6. Combat + Прямой перехват пакета мытья
 local Combat = {}
 local ZP = PhysicalProperties.new(0.0001, 0, 0, 0, 0)
 local function matchCat(n)
@@ -337,7 +334,6 @@ function Combat.ScanModel(model)
     return cats
 end
 
--- Проверка: является ли таблица пакетом мытья BridgeNet2 (по байту 136 или 3 координатам воды)
 local function IsCleanBridgePacket(arg1)
     if type(arg1) ~= "table" then return false end
     if arg1[2] == CLEAN_ACTION_BYTE then return true end
@@ -361,7 +357,6 @@ if not Env.PriorUI_HookInstalled then
                 local args = { ... }
                 local rName = tostring(self.Name)
 
-                -- Прямой перехват пакета мытья из dataRemoteEvent по структуре таблицы
                 if m == "FireServer" and rName == "dataRemoteEvent" then
                     pcall(function()
                         if IsCleanBridgePacket(args[1]) then
@@ -485,7 +480,7 @@ function Combat.RestoreAll()
     table.clear(State.OriginalParts)
 end
 
--- 7. ESP (Исправленная медленная трата стамины + рабочий поиск Еды/Трупов и Костей)
+-- 7. ESP (Исправленная плавная стамина + рабочий поиск Еды/Трупов и Костей)
 local ESPModule = {}
 local espGuis, worldGuis, trackedWorld, stamTrack = {}, {}, {}, {}
 local worldScanDone, worldScanning = false, false
@@ -543,7 +538,7 @@ local function GetDinoStats(player, model, headPart)
         track = { char = model, stam = maxStam, smoothSpeed = 0, lastTime = now, lastPos = pos, lastSprintTime = 0, srvChanged = false, initSrv = realStam }
         stamTrack[player] = track
     else
-        if realStam and track.initSrv and math.abs(realStam - tr.initSrv) > 0.5 then track.srvChanged = true end
+        if realStam and track.initSrv and math.abs(realStam - track.initSrv) > 0.5 then track.srvChanged = true end
         if track.srvChanged and realStam then
             track.stam = math.clamp(realStam, 0, maxStam)
             track.lastTime = now; track.lastPos = pos
@@ -555,11 +550,9 @@ local function GetDinoStats(player, model, headPart)
         local posSpeed = distMoved / dt
         if posSpeed > 150 then posSpeed = 0 end
 
-        -- Сглаживаем рывки координат по сети, чтобы не было ложных срабатываний спринта
         track.smoothSpeed = (track.smoothSpeed * 0.65) + (posSpeed * 0.35)
         local speed = track.smoothSpeed
 
-        -- Спринт в Prior Extinction начинается свыше 29 студов/сек, расход 2.4% в секунду (~42 сек непрерывного бега)
         if speed > 29 then
             track.stam = math.clamp(track.stam - (maxStam * 0.024 * dt), 0, maxStam)
             track.lastSprintTime = now
@@ -605,7 +598,6 @@ local function TryRegisterWorldObject(d)
     if not d or not d.Parent or d == SaveDino.Pad then return end
     if IsPartOfPlayerCharacter(d) then return end
 
-    -- 1. Если это ProximityPrompt или ClickDetector или BillboardGui на объекте
     if d:IsA("ProximityPrompt") or d:IsA("ClickDetector") then
         local target = d.Parent
         if not target or target == Workspace or trackedWorld[target] then return end
@@ -622,9 +614,7 @@ local function TryRegisterWorldObject(d)
         return
     end
 
-    -- 2. Если это Model или BasePart/MeshPart/UnionOperation (туша, кусок мяса, кость)
     if d:IsA("Model") or d:IsA("BasePart") then
-        -- Если объект лежит внутри уже зарегистрированной модели, пропускаем дубликат
         local ancestorModel = d:FindFirstAncestorOfClass("Model")
         if ancestorModel and ancestorModel ~= Workspace and trackedWorld[ancestorModel] then return end
 
@@ -636,7 +626,8 @@ local function TryRegisterWorldObject(d)
         if cat then
             local rootTarget = (d:IsA("BasePart") and ancestorModel and ancestorModel ~= Workspace and not IsPartOfPlayerCharacter(ancestorModel)) and ancestorModel or d
             if not trackedWorld[rootTarget] then
-                local part = rootTarget:IsA("BasePart") and rootTarget or rootTarget:PrimaryPart or rootTarget:FindFirstChildWhichIsA("BasePart", true)
+                -- ИСПРАВЛЕНО: rootTarget.PrimaryPart (через точку, а не двоеточие!)
+                local part = rootTarget:IsA("BasePart") and rootTarget or rootTarget.PrimaryPart or rootTarget:FindFirstChildWhichIsA("BasePart", true)
                 if part then
                     trackedWorld[rootTarget] = { Category = cat, Part = part }
                 end
