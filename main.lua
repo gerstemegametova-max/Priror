@@ -1,3 +1,6 @@
+-- ═══════════════════════════════════════════════════════════════════════
+-- PRIOR EXTINCTION // ULTIMATE (Full Merged & Fixed)
+-- ═══════════════════════════════════════════════════════════════════════
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -13,6 +16,7 @@ local LocalPlayer = Players.LocalPlayer
 local Env = (type(getgenv) == "function" and getgenv()) or _G
 if Env.PriorUI_Cleanup then pcall(Env.PriorUI_Cleanup) end
 
+-- 1. Конфигурация и Состояние
 Env.PriorUI_State = {
     Active = true, Minimized = false, Connections = {}, OriginalParts = {}, CachedModels = {},
     SilentAim = false, AimTargetPart = "Head", HitboxMaster = false, HitboxTransparency = 0.65, HitboxSizeLevel = 3, SelectedHitboxPart = "Head", NoAttackCD = false,
@@ -33,6 +37,7 @@ local Theme = { Background = Color3.fromRGB(12,12,14), Surface = Color3.fromRGB(
 local HitboxSizes = { 10, 16, 22, 28, 35 }
 local PartPatterns = { Jaw = { "jaw", "mandible", "snout", "mouth", "bite", "muzzle", "beak" }, Head = { "head", "skull", "cranium", "neckhead" }, Tail = { "tail1", "tail_1", "tailbase", "tail_base", "tailstart", "tailroot", "uppertail", "tail0", "tail_0", "tail" }, Body = { "chest", "ribcage", "abdomen", "bodyhitbox", "hitboxbody", "upperbody", "spine", "torso", "body", "pelvis", "hip" }, Leg = { "leg", "thigh", "calf", "shin", "foot", "ankle" } }
 
+-- 2. Утилиты
 local Utils = {}
 function Utils.Track(c) if c then table.insert(State.Connections, c) end return c end
 function Utils.Notify(t, x) pcall(function() StarterGui:SetCore("SendNotification", { Title = t, Text = x, Duration = 3 }) end) end
@@ -57,7 +62,9 @@ function Utils.DeepClone(tbl, seen)
     for k, v in pairs(tbl) do copy[Utils.DeepClone(k, seen)] = Utils.DeepClone(v, seen) end
     return copy
 end
-    local Visuals = {}
+
+-- 3. Visuals
+local Visuals = {}
 function Visuals.Init()
     Utils.Track(RunService.Heartbeat:Connect(function()
         if not State.Active then return end
@@ -68,6 +75,7 @@ function Visuals.Init()
 end
 function Visuals.Restore() Lighting.Ambient=LightingOriginals.Ambient; Lighting.OutdoorAmbient=LightingOriginals.OutdoorAmbient; Lighting.Brightness=LightingOriginals.Brightness; Lighting.GlobalShadows=LightingOriginals.GlobalShadows; Lighting.ClockTime=LightingOriginals.ClockTime end
 
+-- 4. Auto Clean & Eat (BridgeNet2)
 local Survival = {}
 LogService.MessageOut:Connect(function(msg)
     if string.find(msg, "CleanlinessStart", 1, true) then Env.PE_WaitingForCleanPacket = os.clock() end
@@ -83,6 +91,7 @@ function Survival.Init()
     end)
 end
 
+-- 5. Save Dino
 local SaveDino = { Pad = nil }
 local function ensurePad() if SaveDino.Pad and SaveDino.Pad.Parent then return SaveDino.Pad end local p=Instance.new("Part"); p.Name="PE_UPad"; p.Size=Vector3.new(60,3,60); p.Anchored=true; p.CanCollide=true; p.Transparency=0.85; p.Color=Color3.fromRGB(30,30,35); p.Parent=Workspace; SaveDino.Pad=p; return p end
 local function killPad() if SaveDino.Pad then pcall(function() SaveDino.Pad:Destroy() end) SaveDino.Pad=nil end end
@@ -123,7 +132,10 @@ function SaveDino.Init()
             if di<=1.5 then noclip(c,false); pcall(function() c:PivotTo(sf) end); zero(c); SaveDino.ForceReset(); Utils.Notify("Save Dino","На поверхности!") else State.SaveDinoCurrentCFrame=State.SaveDinoCurrentCFrame+df.Unit*st; pad.CFrame=CFrame.new(State.SaveDinoCurrentCFrame.Position-Vector3.new(0,fo,0)); pcall(function() c:PivotTo(State.SaveDinoCurrentCFrame) end); zero(c) end
         end
     end))
-    endlocal Combat = {}
+end
+
+-- 6. Combat (Silent Aim + Hitbox + NoAttackCD + Перехват)
+local Combat = {}
 local ZP = PhysicalProperties.new(0.0001, 0, 0, 0, 0)
 local function matchCat(n) local l=string.lower(n) for _,c in ipairs({"Jaw","Head","Tail","Leg","Body"}) do for _,p in ipairs(PartPatterns[c]) do if string.find(l,p,1,true) then if c=="Tail" and (string.find(l,"tip",1,true) or string.match(l,"tail[_%s]*[3-9]")) then return nil end return c end end end return nil end
 local function isLocal(m) return LocalPlayer.Character and (m==LocalPlayer.Character or m:IsDescendantOf(LocalPlayer.Character)) end
@@ -142,23 +154,41 @@ if not Env.PriorUI_HookInstalled then
     pcall(function()
         local old = hookmetamethod(game, "__namecall", function(self, ...)
             local cs = Env.PriorUI_State
-            if cs and cs.Active then
-                local m = getnamecallmethod()
-                if m == "FireServer" or m == "InvokeServer" then
-                    local args = { ... }
-                    if tostring(self.Name) == "dataRemoteEvent" then
+            if not (cs and cs.Active) then return old(self, ...) end
+            
+            local m = getnamecallmethod()
+            if m == "FireServer" or m == "InvokeServer" then
+                local args = { ... }
+                local modified = false
+                
+                if tostring(self.Name) == "dataRemoteEvent" then
+                    pcall(function()
                         local isClean = (os.clock() - (Env.PE_WaitingForCleanPacket or 0)) < 1.5
                         local isEat = (os.clock() - (Env.PE_WaitingForEatPacket or 0)) < 1.5
                         if isClean and not Env.PE_CapturedCleanPacket then Env.PE_CapturedCleanPacket = { Remote = self, Args = Utils.DeepClone(args) }; Utils.Notify("Auto Clean", "Пакет мытья перехвачен!") end
                         if isEat and not Env.PE_CapturedEatPacket then Env.PE_CapturedEatPacket = { Remote = self, Args = Utils.DeepClone(args) }; Utils.Notify("Auto Eat", "Пакет еды перехвачен!") end
-                    end
-                    if cs.SilentAim then
-                        local mod = false
+                    end)
+                end
+                
+                if cs.SilentAim then
+                    pcall(function()
                         for i, arg in ipairs(args) do
-                            if typeof(arg)=="Instance" and arg:IsA("BasePart") then local em=getEnemy(arg) if em then local tp=findPart(em,cs.AimTargetPart) if tp then args[i]=tp; mod=true end end end
+                            if typeof(arg) == "Instance" and arg:IsA("BasePart") then
+                                local em = getEnemy(arg)
+                                if em then
+                                    local tp = findPart(em, cs.AimTargetPart)
+                                    if tp then
+                                        args[i] = tp
+                                        modified = true
+                                    end
+                                end
+                            end
                         end
-                        if mod then return old(self, table.unpack(args)) end
-                    end
+                    end)
+                end
+                
+                if modified then
+                    return old(self, table.unpack(args))
                 end
             end
             return old(self, ...)
@@ -208,6 +238,7 @@ function Combat.Init()
 end
 function Combat.RestoreAll() for p,o in pairs(State.OriginalParts) do pcall(function() if p and p.Parent then p.Size=o.Size; p.Transparency=o.Transparency; p.CanCollide=o.CanCollide; p.CanQuery=o.CanQuery; p.CanTouch=o.CanTouch; p.Massless=o.Massless; p.CustomPhysicalProperties=o.CustomPhysicalProperties; p.RootPriority=o.RootPriority end end) end table.clear(State.OriginalParts) end
 
+-- 7. ESP
 local ESPModule = {}
 local espGuis, worldGuis, trackedWorld, stamTrack = {}, {}, {}, {}
 local worldScanDone, worldScanning = false, false
@@ -307,7 +338,20 @@ function ESPModule.Init()
                                     local bGui=Instance.new("BillboardGui"); bGui.Name="PE_WorldESP"; bGui.Size=UDim2.fromOffset(150,26); bGui.StudsOffset=Vector3.new(0,2.5,0); bGui.AlwaysOnTop=true; bGui.Parent=ESPFolder
                                     local lbl=Instance.new("TextLabel"); lbl.Size=UDim2.fromScale(1,1); lbl.BackgroundTransparency=1; lbl.TextStrokeTransparency=0.1; lbl.Font=Enum.Font.GothamBold; lbl.TextSize=12; lbl.TextColor3=isBone and Color3.fromRGB(255,235,150) or Color3.fromRGB(255,110,90); lbl.Parent=bGui
                                     worldGuis[obj]={gui=bGui,label=lbl}
-                                endlocal TargetSize = UDim2.fromOffset(530, 340)
+                                end
+                                local wGui=worldGuis[obj]; wGui.gui.Adornee=part; wGui.label.Text=string.format("[%dm] %s",math.floor(dist),isBone and "КОСТЬ" or "ЕДА/ТРУП"); wGui.gui.Enabled=true
+                            elseif worldGuis[obj] and worldGuis[obj].gui then worldGuis[obj].gui.Enabled=false end
+                        end
+                    end
+                else for _,gData in pairs(worldGuis) do if gData.gui then gData.gui.Enabled=false end end end
+            end)
+            task.wait(0.15)
+        end
+    end)
+end
+
+-- 8. UI (Меню)
+local TargetSize = UDim2.fromOffset(530, 340)
 local IconSize = UDim2.fromOffset(50, 50)
 local ScreenGui = Instance.new("ScreenGui"); ScreenGui.Name="PriorExtinction_UI"; ScreenGui.ResetOnSpawn=false; ScreenGui.ZIndexBehavior=Enum.ZIndexBehavior.Sibling; pcall(function() ScreenGui.Parent=Utils.GuiParent() end)
 local MainFrame = Instance.new("Frame"); MainFrame.AnchorPoint=Vector2.new(0.5,0.5); MainFrame.Position=UDim2.fromScale(0.5,0.5); MainFrame.Size=UDim2.fromOffset(0,0); MainFrame.BackgroundColor3=Theme.Background; MainFrame.ClipsDescendants=true; MainFrame.Parent=ScreenGui; Utils.Style(MainFrame,12,Theme.Stroke,1.2)
@@ -377,4 +421,3 @@ Utils.Drag(TopBar,MainFrame,nil); Utils.Drag(MiniIcon,MiniIcon,RestoreUI)
 Utils.Track(MinimizeBtn.Activated:Connect(MinimizeUI)); Utils.Track(DeactivateBtn.Activated:Connect(DeactivateScript))
 Visuals.Init(); Survival.Init(); SaveDino.Init(); Combat.Init(); ESPModule.Init()
 task.spawn(function() pcall(function() TweenService:Create(MainFrame,TweenInfo.new(0.45,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Size=TargetSize}):Play() end) end)
-        
