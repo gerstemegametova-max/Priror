@@ -1,5 +1,5 @@
--- Prior Extinction // Ultimate Compact (100% Verified & Bug-Free)
-print("[PE] Запуск проверенного скрипта...")
+-- Prior Extinction // Ultimate Compact (Fixed Stamina Drain + Built-In Packet AutoClean + Fixed Corpse/Bone ESP)
+print("[PE] Запуск обновленного скрипта...")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -7,8 +7,8 @@ local StarterGui = game:GetService("StarterGui")
 local CoreGui = game:GetService("CoreGui")
 local Lighting = game:GetService("Lighting")
 local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
-local LogService = game:GetService("LogService")
 local LocalPlayer = Players.LocalPlayer
 
 local Env = (type(getgenv) == "function" and getgenv()) or _G
@@ -21,20 +21,20 @@ local State = {
     HitboxMaster = false, HitboxTransparency = 0.65, HitboxSizeLevel = 3, SelectedHitboxPart = "Head",
     NoAttackCD = false,
     ESPEnabled = false, ESPMaxDistance = 2000, ESP_Health = true, ESP_Stamina = true,
-    ESPBones = false, ESPCorpses = false, WorldESPMaxDistance = 1500,
+    ESPBones = false, ESPCorpses = false, WorldESPMaxDistance = 2000,
     NightVision = false, NoBlur = false, NoSleepScreen = false,
-    AutoClean = false, AutoEat = false,
+    AutoClean = false,
     SaveDinoEnabled = false, SaveDinoMode = "Down", SaveDinoOffset = 70,
     SaveDinoOriginalCFrame = nil, SaveDinoTargetCFrame = nil, SaveDinoCurrentCFrame = nil,
     SaveDinoPhase = "idle", SaveDinoCollisions = {},
 }
 Env.PriorUI_State = State
 
--- Сохраняем уже пойманные пакеты, если скрипт перезапускается на том же сервере
-Env.PE_CapturedCleanPacket = Env.PE_CapturedCleanPacket or nil
-Env.PE_CapturedEatPacket = Env.PE_CapturedEatPacket or nil
-Env.PE_WaitingForCleanPacket = 0
-Env.PE_WaitingForEatPacket = 0
+-- Вшитые байты пакета мытья из твоего дампа BridgeNet2 (работает сразу без захода в воду!)
+local CLEAN_ACTION_BYTE = string.char(136)
+local CLEAN_PREFIX_BYTE = string.char(1)
+local CLEAN_BRIDGE_ID = string.char(202, 62, 227, 254, 171, 38, 70, 171, 180, 233, 209, 163, 17, 33, 119, 42)
+local DEFAULT_WATER_COORDS = { -4864.8583984375, 144.86546325683594, 2668.1396484375 }
 
 local LO = {
     Ambient = Lighting.Ambient, OutdoorAmbient = Lighting.OutdoorAmbient,
@@ -104,7 +104,7 @@ function Utils.DeepClone(tbl, seen)
     return copy
 end
 
--- 3. Visuals (Включая исправленный NoSleepScreen)
+-- 3. Visuals
 local Visuals = {}
 function Visuals.Init()
     Utils.Track(RunService.Heartbeat:Connect(function()
@@ -135,27 +135,46 @@ function Visuals.Restore()
     Lighting.Brightness = LO.Brightness; Lighting.GlobalShadows = LO.GlobalShadows; Lighting.ClockTime = LO.ClockTime
 end
 
--- 4. Survival (Packet Auto Clean & Auto Eat)
+-- 4. Survival (Вшитый + Авто-обновляемый пакет Auto Clean через dataRemoteEvent)
 local Survival = {}
-function Survival.Init()
-    Utils.Track(LogService.MessageOut:Connect(function(msg)
-        if string.find(msg, "CleanlinessStart", 1, true) then Env.PE_WaitingForCleanPacket = os.clock() end
-        if string.find(msg, "EatStart", 1, true) or string.find(msg, "Consume", 1, true) then Env.PE_WaitingForEatPacket = os.clock() end
-    end))
+local DataRemote = nil
 
+local function FindDataRemote()
+    if DataRemote and DataRemote.Parent then return DataRemote end
+    local found = ReplicatedStorage:FindFirstChild("dataRemoteEvent", true)
+    if found and found:IsA("RemoteEvent") then
+        DataRemote = found
+        return found
+    end
+    return nil
+end
+
+function Survival.Init()
     task.spawn(function()
         while State.Active do
-            if State.AutoClean and Env.PE_CapturedCleanPacket and Env.PE_CapturedCleanPacket.Remote then
+            if State.AutoClean then
                 pcall(function()
-                    Env.PE_CapturedCleanPacket.Remote:FireServer(table.unpack(Utils.DeepClone(Env.PE_CapturedCleanPacket.Args)))
+                    -- 1. Если хук уже перехватил свежий пакет на этом сервере, шлем его
+                    if Env.PE_CapturedCleanPacket and Env.PE_CapturedCleanPacket.Remote then
+                        Env.PE_CapturedCleanPacket.Remote:FireServer(table.unpack(Utils.DeepClone(Env.PE_CapturedCleanPacket.Args)))
+                    else
+                        -- 2. Иначе сразу шлем вшитый пакет мытья из твоего дампа BridgeNet2
+                        local rem = FindDataRemote()
+                        if rem then
+                            local packet = {
+                                [1] = {
+                                    [1] = CLEAN_PREFIX_BYTE,
+                                    [2] = CLEAN_BRIDGE_ID,
+                                    [3] = { DEFAULT_WATER_COORDS[1], DEFAULT_WATER_COORDS[2], DEFAULT_WATER_COORDS[3] }
+                                },
+                                [2] = CLEAN_ACTION_BYTE
+                            }
+                            rem:FireServer(packet)
+                        end
+                    end
                 end)
             end
-            if State.AutoEat and Env.PE_CapturedEatPacket and Env.PE_CapturedEatPacket.Remote then
-                pcall(function()
-                    Env.PE_CapturedEatPacket.Remote:FireServer(table.unpack(Utils.DeepClone(Env.PE_CapturedEatPacket.Args)))
-                end)
-            end
-            task.wait(1.2)
+            task.wait(1.0)
         end
     end)
 end
@@ -257,7 +276,7 @@ function SaveDino.Init()
     end))
 end
 
--- 6. Combat (Silent Aim + Hitbox + NoAttackCD + Sniffer)
+-- 6. Combat + Прямой перехват пакета мытья по структуре таблицы (без ожидания логов!)
 local Combat = {}
 local ZP = PhysicalProperties.new(0.0001, 0, 0, 0, 0)
 local function matchCat(n)
@@ -318,6 +337,18 @@ function Combat.ScanModel(model)
     return cats
 end
 
+-- Проверка: является ли таблица пакетом мытья BridgeNet2 (по байту 136 или 3 координатам воды)
+local function IsCleanBridgePacket(arg1)
+    if type(arg1) ~= "table" then return false end
+    if arg1[2] == CLEAN_ACTION_BYTE then return true end
+    local inner = arg1[1]
+    if type(inner) == "table" and inner[2] == CLEAN_BRIDGE_ID then return true end
+    if type(inner) == "table" and inner[1] == CLEAN_PREFIX_BYTE and type(inner[3]) == "table" and type(inner[3][1]) == "number" and type(inner[3][2]) == "number" and type(inner[3][3]) == "number" then
+        return true
+    end
+    return false
+end
+
 if not Env.PriorUI_HookInstalled then
     pcall(function()
         local old
@@ -330,19 +361,11 @@ if not Env.PriorUI_HookInstalled then
                 local args = { ... }
                 local rName = tostring(self.Name)
 
+                -- Прямой перехват пакета мытья из dataRemoteEvent по структуре таблицы
                 if m == "FireServer" and rName == "dataRemoteEvent" then
                     pcall(function()
-                        local isClean = (os.clock() - (Env.PE_WaitingForCleanPacket or 0)) < 1.5
-                        local isEat = (os.clock() - (Env.PE_WaitingForEatPacket or 0)) < 1.5
-                        if isClean and not Env.PE_CapturedCleanPacket then
+                        if IsCleanBridgePacket(args[1]) then
                             Env.PE_CapturedCleanPacket = { Remote = self, Args = Utils.DeepClone(args) }
-                            Env.PE_WaitingForCleanPacket = 0
-                            task.defer(function() Utils.Notify("Auto Clean", "Пакет мытья перехвачен!") end)
-                        end
-                        if isEat and not Env.PE_CapturedEatPacket then
-                            Env.PE_CapturedEatPacket = { Remote = self, Args = Utils.DeepClone(args) }
-                            Env.PE_WaitingForEatPacket = 0
-                            task.defer(function() Utils.Notify("Auto Eat", "Пакет еды перехвачен!") end)
                         end
                     end)
                 end
@@ -462,7 +485,7 @@ function Combat.RestoreAll()
     table.clear(State.OriginalParts)
 end
 
--- 7. ESP (Без фризов: 1 мягкий обход + DescendantAdded + Исправленная стамина)
+-- 7. ESP (Исправленная медленная трата стамины + рабочий поиск Еды/Трупов и Костей)
 local ESPModule = {}
 local espGuis, worldGuis, trackedWorld, stamTrack = {}, {}, {}, {}
 local worldScanDone, worldScanning = false, false
@@ -517,10 +540,10 @@ local function GetDinoStats(player, model, headPart)
     local track = stamTrack[player]
 
     if not track or track.char ~= model then
-        track = { char = model, stam = maxStam, lastTime = now, lastPos = pos, lastSprintTime = 0, srvChanged = false, initSrv = realStam }
+        track = { char = model, stam = maxStam, smoothSpeed = 0, lastTime = now, lastPos = pos, lastSprintTime = 0, srvChanged = false, initSrv = realStam }
         stamTrack[player] = track
     else
-        if realStam and track.initSrv and math.abs(realStam - track.initSrv) > 0.5 then track.srvChanged = true end
+        if realStam and track.initSrv and math.abs(realStam - tr.initSrv) > 0.5 then track.srvChanged = true end
         if track.srvChanged and realStam then
             track.stam = math.clamp(realStam, 0, maxStam)
             track.lastTime = now; track.lastPos = pos
@@ -530,18 +553,23 @@ local function GetDinoStats(player, model, headPart)
         local dt = math.clamp(now - track.lastTime, 0.05, 1.0)
         local distMoved = Vector3.new(pos.X - track.lastPos.X, 0, pos.Z - track.lastPos.Z).Magnitude
         local posSpeed = distMoved / dt
-        local velSpeed = 0
-        pcall(function() local v = movePart.AssemblyLinearVelocity; velSpeed = Vector3.new(v.X, 0, v.Z).Magnitude end)
-        local speed = math.max(posSpeed, velSpeed)
-        if speed > 160 then speed = 0 end
+        if posSpeed > 150 then posSpeed = 0 end
 
-        if speed > 19 then
-            track.stam = math.clamp(track.stam - (maxStam * 0.065 * dt), 0, maxStam)
+        -- Сглаживаем рывки координат по сети, чтобы не было ложных срабатываний спринта
+        track.smoothSpeed = (track.smoothSpeed * 0.65) + (posSpeed * 0.35)
+        local speed = track.smoothSpeed
+
+        -- Спринт в Prior Extinction начинается свыше 29 студов/сек, расход 2.4% в секунду (~42 сек непрерывного бега)
+        if speed > 29 then
+            track.stam = math.clamp(track.stam - (maxStam * 0.024 * dt), 0, maxStam)
             track.lastSprintTime = now
         else
             if (now - (track.lastSprintTime or 0)) >= 3.0 then
-                if speed > 4 then track.stam = math.clamp(track.stam + (maxStam * 0.0035 * dt), 0, maxStam)
-                else track.stam = math.clamp(track.stam + (maxStam * 0.0135 * dt), 0, maxStam) end
+                if speed > 6 then
+                    track.stam = math.clamp(track.stam + (maxStam * 0.004 * dt), 0, maxStam)
+                else
+                    track.stam = math.clamp(track.stam + (maxStam * 0.014 * dt), 0, maxStam)
+                end
             end
         end
         track.lastTime = now; track.lastPos = pos
@@ -559,39 +587,66 @@ local function IsPartOfPlayerCharacter(obj)
     return false
 end
 
-local BoneKeywords = { "fossil", "bone", "skeleton", "amber", "relic", "digsite", "dig_site", "excavat" }
-local CorpseKeywords = { "carcass", "corpse", "deadbody", "meat", "gore", "chunk", "edible", "food", "prey" }
+local BoneKeywords = { "fossil", "bone", "skeleton", "amber", "relic", "digsite", "dig_site", "excavat", "skull", "remains" }
+local CorpseKeywords = { "carcass", "corpse", "deadbody", "dead_body", "meat", "gore", "chunk", "edible", "food", "prey", "ribcage", "flesh", "steak" }
+local IgnoredFolders = { trees = true, foliage = true, rocks = true, grass = true, plants = true, leaves = true, clouds = true, lighting = true, water = true }
+
+local function MatchCategoryFromText(tx)
+    for _, k in ipairs(BoneKeywords) do
+        if string.find(tx, k, 1, true) then return "Bone" end
+    end
+    for _, k in ipairs(CorpseKeywords) do
+        if string.find(tx, k, 1, true) then return "Corpse" end
+    end
+    return nil
+end
 
 local function TryRegisterWorldObject(d)
     if not d or not d.Parent or d == SaveDino.Pad then return end
-    if d:IsA("ProximityPrompt") and d.Parent then
-        local t = d.Parent
-        if trackedWorld[t] or IsPartOfPlayerCharacter(t) then return end
-        local tx = string.lower(d.Name .. " " .. d.ActionText .. " " .. d.ObjectText .. " " .. t.Name)
-        local cat = nil
-        for _, k in ipairs(BoneKeywords) do if string.find(tx, k, 1, true) then cat = "Bone"; break end end
-        if not cat then for _, k in ipairs(CorpseKeywords) do if string.find(tx, k, 1, true) then cat = "Corpse"; break end end end
-        if cat then
-            local p = t:IsA("BasePart") and t or t:FindFirstAncestorWhichIsA("BasePart") or t:FindFirstChildWhichIsA("BasePart", true)
-            if p then trackedWorld[t] = { Category = cat, Part = p } end
+    if IsPartOfPlayerCharacter(d) then return end
+
+    -- 1. Если это ProximityPrompt или ClickDetector или BillboardGui на объекте
+    if d:IsA("ProximityPrompt") or d:IsA("ClickDetector") then
+        local target = d.Parent
+        if not target or target == Workspace or trackedWorld[target] then return end
+        local pName = target.Parent and target.Parent ~= Workspace and target.Parent.Name or ""
+        local tx = string.lower(d.Name .. " " .. target.Name .. " " .. pName)
+        if d:IsA("ProximityPrompt") then
+            tx = tx .. " " .. string.lower(d.ActionText .. " " .. d.ObjectText)
         end
-    elseif (d:IsA("Model") or d:IsA("MeshPart")) and d.Parent then
-        local n = string.lower(d.Name)
-        local cat = nil
-        for _, k in ipairs(BoneKeywords) do if string.find(n, k, 1, true) then cat = "Bone"; break end end
-        if not cat then for _, k in ipairs(CorpseKeywords) do if string.find(n, k, 1, true) then cat = "Corpse"; break end end end
+        local cat = MatchCategoryFromText(tx)
         if cat then
-            local rm = d:IsA("Model") and d or (d.Parent:IsA("Model") and d.Parent or d)
-            if not trackedWorld[rm] and not IsPartOfPlayerCharacter(rm) then
-                local p = rm:IsA("BasePart") and rm or rm:FindFirstChildWhichIsA("BasePart", true)
-                if p then trackedWorld[rm] = { Category = cat, Part = p } end
+            local part = target:IsA("BasePart") and target or target:FindFirstAncestorWhichIsA("BasePart") or target:FindFirstChildWhichIsA("BasePart", true)
+            if part then trackedWorld[target] = { Category = cat, Part = part } end
+        end
+        return
+    end
+
+    -- 2. Если это Model или BasePart/MeshPart/UnionOperation (туша, кусок мяса, кость)
+    if d:IsA("Model") or d:IsA("BasePart") then
+        -- Если объект лежит внутри уже зарегистрированной модели, пропускаем дубликат
+        local ancestorModel = d:FindFirstAncestorOfClass("Model")
+        if ancestorModel and ancestorModel ~= Workspace and trackedWorld[ancestorModel] then return end
+
+        local parentName = (d.Parent and d.Parent ~= Workspace) and string.lower(d.Parent.Name) or ""
+        local grandParentName = (d.Parent and d.Parent.Parent and d.Parent.Parent ~= Workspace) and string.lower(d.Parent.Parent.Name) or ""
+        local fullCheck = string.lower(d.Name) .. " " .. parentName .. " " .. grandParentName
+
+        local cat = MatchCategoryFromText(fullCheck)
+        if cat then
+            local rootTarget = (d:IsA("BasePart") and ancestorModel and ancestorModel ~= Workspace and not IsPartOfPlayerCharacter(ancestorModel)) and ancestorModel or d
+            if not trackedWorld[rootTarget] then
+                local part = rootTarget:IsA("BasePart") and rootTarget or rootTarget:PrimaryPart or rootTarget:FindFirstChildWhichIsA("BasePart", true)
+                if part then
+                    trackedWorld[rootTarget] = { Category = cat, Part = part }
+                end
             end
         end
     end
 end
 
 function ESPModule.ScanWorldItems()
-    if worldScanDone or worldScanning then return end
+    if worldScanning then return end
     worldScanning = true
     task.spawn(function()
         local count = 0
@@ -601,18 +656,19 @@ function ESPModule.ScanWorldItems()
             for _, child in ipairs(ch) do
                 if not State.Active then return end
                 count = count + 1
-                if count % 400 == 0 then task.wait() end
+                if count % 350 == 0 then task.wait() end
                 if child ~= Workspace.Terrain and not IsPartOfPlayerCharacter(child) then
                     TryRegisterWorldObject(child)
                     local cn = string.lower(child.Name)
-                    if not (child:IsA("Folder") and (cn == "trees" or cn == "foliage" or cn == "rocks" or cn == "grass" or cn == "plants")) then
+                    if not IgnoredFolders[cn] and not trackedWorld[child] then
                         scanNode(child)
                     end
                 end
             end
         end
         scanNode(Workspace)
-        worldScanDone = true; worldScanning = false
+        worldScanDone = true
+        worldScanning = false
     end)
 end
 
@@ -765,23 +821,19 @@ CreateToggle(RenderPage, "Night Vision", State.NightVision, 7, function(v) State
 CreateToggle(RenderPage, "No Blur", State.NoBlur, 8, function(v) State.NoBlur = v end)
 CreateToggle(RenderPage, "No Sleep Screen", State.NoSleepScreen, 9, function(v) State.NoSleepScreen = v end)
 
-CreateToggle(ToolsPage, "Auto Clean (Вечный)", State.AutoClean, 1, function(v)
+CreateToggle(ToolsPage, "Auto Clean (Вшитый пакет мытья)", State.AutoClean, 1, function(v)
     State.AutoClean = v
-    if v and not Env.PE_CapturedCleanPacket then Utils.Notify("Auto Clean", "Помойся 1 раз для перехвата пакета!") end
+    if v then Utils.Notify("Auto Clean", "Пакетное мытье активировано!") end
 end)
-CreateToggle(ToolsPage, "Auto Eat (Вечный)", State.AutoEat, 2, function(v)
-    State.AutoEat = v
-    if v and not Env.PE_CapturedEatPacket then Utils.Notify("Auto Eat", "Съешь 1 раз для перехвата пакета!") end
-end)
-CreateToggle(ToolsPage, "Save Dino", false, 3, function(v) SaveDino.SetEnabled(v) end)
-CreateCycleButton(ToolsPage, "Направление Save Dino", { "Down", "Up" }, 1, 4, function(_, idx) State.SaveDinoMode = (idx == 1) and "Down" or "Up"; SaveDino.RecalculateTarget(); if State.SaveDinoPhase == "holding" then State.SaveDinoPhase = "moving_to_safe" end end)
-CreateCycleButton(ToolsPage, "Глубина Save Dino", { 50, 70, 95, 120 }, 2, 5, function(val) State.SaveDinoOffset = val; SaveDino.RecalculateTarget(); if State.SaveDinoPhase == "holding" then State.SaveDinoPhase = "moving_to_safe" end end)
+CreateToggle(ToolsPage, "Save Dino", false, 2, function(v) SaveDino.SetEnabled(v) end)
+CreateCycleButton(ToolsPage, "Направление Save Dino", { "Down", "Up" }, 1, 3, function(_, idx) State.SaveDinoMode = (idx == 1) and "Down" or "Up"; SaveDino.RecalculateTarget(); if State.SaveDinoPhase == "holding" then State.SaveDinoPhase = "moving_to_safe" end end)
+CreateCycleButton(ToolsPage, "Глубина Save Dino", { 50, 70, 95, 120 }, 2, 4, function(val) State.SaveDinoOffset = val; SaveDino.RecalculateTarget(); if State.SaveDinoPhase == "holding" then State.SaveDinoPhase = "moving_to_safe" end end)
 
 local function MinimizeUI() if State.Minimized then return end State.Minimized = true; MainFrame.Visible = false; MiniIcon.Size = IconSize; MiniIcon.Visible = true end
 local function RestoreUI() if not State.Minimized then return end State.Minimized = false; MiniIcon.Visible = false; MainFrame.Visible = true end
 local function DeactivateScript()
     if not State.Active then return end
-    State.Active = false; State.SilentAim = false; State.HitboxMaster = false; State.ESPEnabled = false; State.ESPBones = false; State.ESPCorpses = false; State.NoAttackCD = false; State.AutoClean = false; State.AutoEat = false
+    State.Active = false; State.SilentAim = false; State.HitboxMaster = false; State.ESPEnabled = false; State.ESPBones = false; State.ESPCorpses = false; State.NoAttackCD = false; State.AutoClean = false
     Visuals.Restore(); SaveDino.ForceReset(); Combat.RestoreAll(); ESPModule.Cleanup()
     for _, conn in ipairs(State.Connections) do pcall(function() conn:Disconnect() end) end; table.clear(State.Connections)
     pcall(function() ScreenGui:Destroy() end); Env.PriorUI_Cleanup = nil; Utils.Notify("Prior Extinction", "Скрипт выгружен.")
@@ -790,6 +842,5 @@ Env.PriorUI_Cleanup = DeactivateScript
 Utils.Drag(TopBar, MainFrame, nil); Utils.Drag(MiniIcon, MiniIcon, RestoreUI)
 Utils.Track(MinimizeBtn.Activated:Connect(MinimizeUI)); Utils.Track(DeactivateBtn.Activated:Connect(DeactivateScript))
 
--- Запускаем ВСЕ 5 модулей (включая Survival!)
 Visuals.Init(); Survival.Init(); SaveDino.Init(); Combat.Init(); ESPModule.Init()
 task.spawn(function() pcall(function() TweenService:Create(MainFrame, TweenInfo.new(0.45, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Size = TargetSize }):Play() end) end)
