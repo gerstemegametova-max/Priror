@@ -20,15 +20,12 @@ local State = {
     SilentAim = false, AimTargetPart = "Head",
     HitboxMaster = false, HitboxTransparency = 0.75, HitboxTransLevel = 3, HitboxSizeLevel = 3, SelectedHitboxPart = "Head",
     NoAttackCD = false,
-    -- Пропорциональный Reach + настраиваемая прозрачность
     ReachEnabled = false, ReachScaleLevel = 3, ReachTransparency = 0.75, ReachTransLevel = 3,
     ReachParts = { Jaw = true, Head = true, Tail = false, Leg = false, Body = false },
-    -- Render & Camera
     ESPEnabled = false, ESPMaxDistance = 2000, ESP_Health = true, ESP_Stamina = true, ESP_Species = true,
     ESPBones = false, ESPCorpses = false, WorldESPMaxDistance = 2000,
     NightVision = false, NoBlur = false, NoSleepScreen = false,
     UnlockCamera = false,
-    -- Tools
     AutoClean = false,
     SaveDinoEnabled = false, SaveDinoMode = "Down", SaveDinoOffset = 70,
     SaveDinoOriginalCFrame = nil, SaveDinoTargetCFrame = nil, SaveDinoCurrentCFrame = nil,
@@ -151,7 +148,6 @@ function Visuals.Init()
     task.spawn(function()
         while State.Active do
             pcall(function()
-                -- 1. Unlock Camera
                 if State.UnlockCamera then
                     wasUnlockCam = true
                     LocalPlayer.CameraMaxZoomDistance = 100000
@@ -164,7 +160,6 @@ function Visuals.Init()
                     LocalPlayer.DevCameraOcclusionMode = LO.Occlusion
                 end
 
-                -- 2. Night Vision
                 if State.NightVision then
                     wasNightVision = true
                     Lighting.Ambient = Color3.fromRGB(230, 230, 230)
@@ -181,7 +176,6 @@ function Visuals.Init()
                     Visuals.RestoreLighting()
                 end
 
-                -- 3. No Blur & No Sleep Screen
                 if State.NoBlur or State.NoSleepScreen then
                     ProcessPostEffects(Lighting)
                     if Workspace.CurrentCamera then
@@ -342,7 +336,7 @@ function SaveDino.Init()
     end))
 end
 
--- 6. Combat & Кэшированный Пропорциональный Reach (ИСПРАВЛЕНО)
+-- 6. Combat & Кэшированный Пропорциональный Reach
 local Combat = {}
 local ZP = PhysicalProperties.new(0.0001, 0, 0, 0, 0)
 local CachedLocalGroups = nil
@@ -492,7 +486,6 @@ if not Env.PriorUI_HookInstalled then
 end
 
 function Combat.Init()
-    -- 1. Фоновое сканирование моделей (ИСПРАВЛЕНО: сканирует всегда, а не только при изменении childCount)
     task.spawn(function()
         while State.Active do
             pcall(function()
@@ -511,15 +504,13 @@ function Combat.Init()
                     CachedLocalGroups = nil
                 end
             end)
-            task.wait(2.0) -- Сканируем раз в 2 секунды. Это не лагает и гарантирует, что все части будут найдены.
+            task.wait(2.0)
         end
     end)
 
-    -- 2. Быстрый цикл применения размеров (применяет изменения к уже найденным деталям)
     task.spawn(function()
         while State.Active do
             pcall(function()
-                -- Хитбоксы врагов
                 if State.HitboxMaster or next(State.OriginalParts) ~= nil then
                     for model, groups in pairs(State.CachedModels) do
                         if model and model.Parent and not isLocal(model) then
@@ -545,7 +536,6 @@ function Combat.Init()
                     end
                 end
 
-                -- Твой собственный Reach
                 local myChar = LocalPlayer.Character
                 if myChar and myChar.Parent and CachedLocalGroups and (State.ReachEnabled or next(State.LocalOriginalParts) ~= nil) then
                     local targetRange = ReachRanges[State.ReachScaleLevel] or 20
@@ -1006,82 +996,3 @@ function ESPModule.Init()
         end
     end)
 end
-
--- 8. UI & Init
-local ScreenGui = Instance.new("ScreenGui"); ScreenGui.Name = "PriorExtinction_UI"; ScreenGui.ResetOnSpawn = false; ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling; pcall(function() ScreenGui.Parent = Utils.GuiParent() end)
-local TargetSize, IconSize = UDim2.fromOffset(530, 340), UDim2.fromOffset(50, 50)
-local MainFrame = Instance.new("Frame"); MainFrame.AnchorPoint = Vector2.new(0.5, 0.5); MainFrame.Position = UDim2.fromScale(0.5, 0.5); MainFrame.Size = UDim2.fromOffset(0, 0); MainFrame.BackgroundColor3 = Theme.Background; MainFrame.ClipsDescendants = true; MainFrame.Parent = ScreenGui; Utils.Style(MainFrame, 12, Theme.Stroke, 1.2)
-local TopBar = Instance.new("Frame"); TopBar.Size = UDim2.new(1, 0, 0, 42); TopBar.BackgroundColor3 = Theme.Surface; TopBar.Parent = MainFrame; Utils.Style(TopBar, 12, nil)
-local TitleLabel = Instance.new("TextLabel"); TitleLabel.Size = UDim2.new(1, -120, 1, 0); TitleLabel.Position = UDim2.fromOffset(15, 0); TitleLabel.BackgroundTransparency = 1; TitleLabel.Text = "PRIOR EXTINCTION // ULTIMATE"; TitleLabel.TextColor3 = Theme.TextPrimary; TitleLabel.Font = Enum.Font.GothamBold; TitleLabel.TextSize = 13; TitleLabel.TextXAlignment = Enum.TextXAlignment.Left; TitleLabel.Parent = TopBar
-local MinimizeBtn = Instance.new("TextButton"); MinimizeBtn.Size = UDim2.fromOffset(32, 28); MinimizeBtn.Position = UDim2.new(1, -40, 0.5, -14); MinimizeBtn.BackgroundColor3 = Theme.Element; MinimizeBtn.Text = "—"; MinimizeBtn.TextColor3 = Theme.TextPrimary; MinimizeBtn.Font = Enum.Font.GothamBold; MinimizeBtn.TextSize = 14; MinimizeBtn.Parent = TopBar; Utils.Style(MinimizeBtn, 6, Theme.Stroke, 1)
-local MiniIcon = Instance.new("TextButton"); MiniIcon.AnchorPoint = Vector2.new(0.5, 0.5); MiniIcon.Position = UDim2.new(0.1, 0, 0.2, 0); MiniIcon.Size = UDim2.fromOffset(0, 0); MiniIcon.BackgroundColor3 = Theme.Surface; MiniIcon.Text = "PE"; MiniIcon.TextColor3 = Theme.TextPrimary; MiniIcon.Font = Enum.Font.GothamBold; MiniIcon.TextSize = 14; MiniIcon.Visible = false; MiniIcon.Parent = ScreenGui; Utils.Style(MiniIcon, 25, Theme.Stroke, 1.5)
-local Sidebar = Instance.new("Frame"); Sidebar.Size = UDim2.new(0, 145, 1, -42); Sidebar.Position = UDim2.fromOffset(0, 42); Sidebar.BackgroundColor3 = Theme.Surface; Sidebar.Parent = MainFrame
-local TabList = Instance.new("ScrollingFrame"); TabList.Size = UDim2.new(1, -16, 1, -66); TabList.Position = UDim2.fromOffset(8, 10); TabList.BackgroundTransparency = 1; TabList.ScrollBarThickness = 0; TabList.CanvasSize = UDim2.new(0, 0, 0, 0); TabList.AutomaticCanvasSize = Enum.AutomaticSize.Y; TabList.Parent = Sidebar
-local TabListLayout = Instance.new("UIListLayout"); TabListLayout.Padding = UDim.new(0, 6); TabListLayout.Parent = TabList
-local DeactivateBtn = Instance.new("TextButton"); DeactivateBtn.Size = UDim2.new(1, -16, 0, 38); DeactivateBtn.Position = UDim2.new(0, 8, 1, -46); DeactivateBtn.BackgroundColor3 = Theme.Danger; DeactivateBtn.Text = "Deactivate"; DeactivateBtn.TextColor3 = Theme.TextPrimary; DeactivateBtn.Font = Enum.Font.GothamSemibold; DeactivateBtn.TextSize = 13; DeactivateBtn.Parent = Sidebar; Utils.Style(DeactivateBtn, 8, Theme.DangerStroke, 1)
-local PagesContainer = Instance.new("Frame"); PagesContainer.Size = UDim2.new(1, -145, 1, -42); PagesContainer.Position = UDim2.fromOffset(145, 42); PagesContainer.BackgroundTransparency = 1; PagesContainer.Parent = MainFrame
-local Tabs = {}; local CurrentTab = nil
-local function SelectTab(tabName) for name, data in pairs(Tabs) do local isSelected = (name == tabName); data.Page.Visible = isSelected; data.Button.BackgroundColor3 = isSelected and Theme.ElementActive or Theme.Element; data.Button.TextColor3 = isSelected and Theme.TextPrimary or Theme.TextSecondary end; CurrentTab = tabName end
-local function CreateTab(tabName)
-    local btn = Instance.new("TextButton"); btn.Size = UDim2.new(1, 0, 0, 38); btn.BackgroundColor3 = Theme.Element; btn.Text = tabName; btn.TextColor3 = Theme.TextSecondary; btn.Font = Enum.Font.GothamMedium; btn.TextSize = 13; btn.Parent = TabList; Utils.Style(btn, 8, Theme.Stroke, 1)
-    local page = Instance.new("ScrollingFrame"); page.Size = UDim2.new(1, -20, 1, -20); page.Position = UDim2.fromOffset(10, 10); page.BackgroundTransparency = 1; page.ScrollBarThickness = 2; page.CanvasSize = UDim2.new(0, 0, 0, 0); page.AutomaticCanvasSize = Enum.AutomaticSize.Y; page.Visible = false; page.Parent = PagesContainer
-    local layout = Instance.new("UIListLayout"); layout.Padding = UDim.new(0, 8); layout.SortOrder = Enum.SortOrder.LayoutOrder; layout.Parent = page
-    Utils.Track(btn.Activated:Connect(function() SelectTab(tabName) end))
-    Tabs[tabName] = { Button = btn, Page = page }; if not CurrentTab then SelectTab(tabName) end; return page
-end
-local function CreateToggle(parent, text, defaultState, order, callback)
-    local btn = Instance.new("TextButton"); btn.LayoutOrder = order; btn.Size = UDim2.new(1, 0, 0, 42); btn.BackgroundColor3 = Theme.Surface; btn.Text = ""; btn.AutoButtonColor = false; btn.Parent = parent; Utils.Style(btn, 8, Theme.Stroke, 1)
-    local lbl = Instance.new("TextLabel"); lbl.Size = UDim2.new(1, -70, 1, 0); lbl.Position = UDim2.fromOffset(12, 0); lbl.BackgroundTransparency = 1; lbl.Text = text; lbl.TextColor3 = Theme.TextPrimary; lbl.Font = Enum.Font.GothamMedium; lbl.TextSize = 13; lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.Parent = btn
-    local ind = Instance.new("Frame"); ind.Size = UDim2.fromOffset(40, 22); ind.Position = UDim2.new(1, -52, 0.5, -11); ind.BackgroundColor3 = defaultState and Theme.ElementActive or Theme.Element; ind.Parent = btn; Utils.Style(ind, 11, Theme.Stroke, 1)
-    local kn = Instance.new("Frame"); kn.Size = UDim2.fromOffset(16, 16); kn.Position = defaultState and UDim2.fromOffset(21, 3) or UDim2.fromOffset(3, 3); kn.BackgroundColor3 = defaultState and Theme.TextPrimary or Theme.TextSecondary; kn.Parent = ind; Utils.Style(kn, 8, nil)
-    local state = defaultState
-    Utils.Track(btn.Activated:Connect(function() state = not state; ind.BackgroundColor3 = state and Theme.ElementActive or Theme.Element; kn.Position = state and UDim2.fromOffset(21, 3) or UDim2.fromOffset(3, 3); kn.BackgroundColor3 = state and Theme.TextPrimary or Theme.TextSecondary; if callback then pcall(callback, state) end end))
-end
-local function CreateCycleButton(parent, labelPrefix, options, defaultIndex, order, callback)
-    local idx = defaultIndex or 1
-    local btn = Instance.new("TextButton"); btn.LayoutOrder = order; btn.Size = UDim2.new(1, 0, 0, 42); btn.BackgroundColor3 = Theme.Element; btn.Text = labelPrefix .. ": " .. tostring(options[idx]); btn.TextColor3 = Theme.TextPrimary; btn.Font = Enum.Font.GothamSemibold; btn.TextSize = 13; btn.Parent = parent; Utils.Style(btn, 8, Theme.Stroke, 1)
-    Utils.Track(btn.Activated:Connect(function() idx = (idx % #options) + 1; btn.Text = labelPrefix .. ": " .. tostring(options[idx]); if callback then pcall(callback, options[idx], idx) end end))
-end
-
-local CombatPage = CreateTab("Combat"); local RenderPage = CreateTab("Render"); local ToolsPage = CreateTab("Tools")
-
-CreateToggle(CombatPage, "Reach (Дальность + Форма частей тела)", State.ReachEnabled, 1, function(v) State.ReachEnabled = v end)
-CreateCycleButton(CombatPage, "Дистанция / Форма Reach", ReachLabels, State.ReachScaleLevel, 2, function(_, idx) State.ReachScaleLevel = idx end)
-CreateCycleButton(CombatPage, "Прозрачность Reach", TransLabels, State.ReachTransLevel, 3, function(_, idx)
-    State.ReachTransLevel = idx
-    State.ReachTransparency = TransValues[idx] or 0.75
-end)
-CreateToggle(CombatPage, "[Reach] Челюсть / Укус (Jaw)", State.ReachParts.Jaw, 4, function(v) State.ReachParts.Jaw = v end)
-CreateToggle(CombatPage, "[Reach] Голова (Head)", State.ReachParts.Head, 5, function(v) State.ReachParts.Head = v end)
-CreateToggle(CombatPage, "[Reach] Весь Хвост (Full Tail)", State.ReachParts.Tail, 6, function(v) State.ReachParts.Tail = v end)
-CreateToggle(CombatPage, "[Reach] Ноги и Лапы (Legs)", State.ReachParts.Leg, 7, function(v) State.ReachParts.Leg = v end)
-CreateToggle(CombatPage, "[Reach] Тело (Body)", State.ReachParts.Body, 8, function(v) State.ReachParts.Body = v end)
-
-CreateToggle(CombatPage, "Silent Aim", State.SilentAim, 9, function(v) State.SilentAim = v end)
-CreateCycleButton(CombatPage, "Цель Silent Aim", { "Head", "Jaw", "Body", "Tail", "Leg" }, 1, 10, function(opt) State.AimTargetPart = opt end)
-CreateToggle(CombatPage, "Enemy Hitbox Expander (Враги)", State.HitboxMaster, 11, function(v) State.HitboxMaster = v end)
-CreateCycleButton(CombatPage, "Часть тела Врага", { "Head", "Jaw", "Body", "Tail", "Leg" }, 1, 12, function(opt) State.SelectedHitboxPart = opt end)
-CreateCycleButton(CombatPage, "Размер Хитбокса Врага", { "1 (10)", "2 (16)", "3 (22)", "4 (28)", "5 (35)" }, State.HitboxSizeLevel, 13, function(_, idx) State.HitboxSizeLevel = idx end)
-CreateCycleButton(CombatPage, "Прозрачность Хитбокса Врага", TransLabels, State.HitboxTransLevel, 14, function(_, idx)
-    State.HitboxTransLevel = idx
-    State.HitboxTransparency = TransValues[idx] or 0.75
-end)
-CreateToggle(CombatPage, "No Attack CD", State.NoAttackCD, 15, function(v) State.NoAttackCD = v end)
-
-CreateToggle(RenderPage, "Unlock Camera (Отдаление без лимита)", State.UnlockCamera, 1, function(v) State.UnlockCamera = v end)
-CreateToggle(RenderPage, "ESP Игроков (Ник + Динозавр + Полоски)", State.ESPEnabled, 2, function(v) State.ESPEnabled = v end)
-CreateToggle(RenderPage, "Показывать Название Динозавра", State.ESP_Species, 3, function(v) State.ESP_Species = v end)
-CreateToggle(RenderPage, "Показывать Полоску HP", State.ESP_Health, 4, function(v) State.ESP_Health = v end)
-CreateToggle(RenderPage, "Показывать Полоску Стамины", State.ESP_Stamina, 5, function(v) State.ESP_Stamina = v end)
-CreateCycleButton(RenderPage, "Дистанция ESP Игроков", { 1000, 2000, 3500, 5000 }, 2, 6, function(val) State.ESPMaxDistance = val end)
-CreateToggle(RenderPage, "ESP Костей", State.ESPBones, 7, function(v) State.ESPBones = v; if v then ESPModule.ScanWorldItems() end end)
-CreateToggle(RenderPage, "ESP Еды / Трупов", State.ESPCorpses, 8, function(v) State.ESPCorpses = v; if v then ESPModule.ScanWorldItems() end end)
-CreateToggle(RenderPage, "Night Vision (Без тумана)", State.NightVision, 9, function(v) State.NightVision = v end)
-CreateToggle(RenderPage, "No Blur (Убрать размытие)", State.NoBlur, 10, function(v) State.NoBlur = v end)
-CreateToggle(RenderPage, "No Sleep Screen (Убрать темный экран)", State.NoSleepScreen, 11, function(v) State.NoSleepScreen = v end)
-
-CreateToggle(ToolsPage, "Auto Clean (Вшитый пакет мытья)", State.AutoClean, 1, function(v)
-    State.AutoClean = v
-    if v then Utils.Notify("Auto Clean", "Пакетное мытье активировано!") end
-end)
-CreateToggle(ToolsPage, "Save Dino", false, 2, function(v)
