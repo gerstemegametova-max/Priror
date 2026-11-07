@@ -1,0 +1,301 @@
+-- ═══════════════════════════════════════════════════════════════════════
+-- PRIOR EXTINCTION // SCRIPT 2 (Aim + HP ESP)
+-- ═══════════════════════════════════════════════════════════════════════
+print("[PE 2] Запуск скрипта...")
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local StarterGui = game:GetService("StarterGui")
+local CoreGui = game:GetService("CoreGui")
+local TweenService = game:GetService("TweenService")
+local Workspace = game:GetService("Workspace")
+local LocalPlayer = Players.LocalPlayer
+
+local Env = (type(getgenv) == "function" and getgenv()) or _G
+if Env.PriorUI2_Cleanup then pcall(Env.PriorUI2_Cleanup) end
+
+-- 1. Настройки
+local State = {
+    Active = true, Minimized = false, Connections = {},
+    
+    -- Aim
+    SilentAim = false,
+    AimPart = "Head",
+    
+    -- ESP
+    ESPEnabled = false,
+    ESPHealth = true,
+    ESPDistance = 2000
+}
+Env.PriorUI2_State = State
+
+local Theme = {
+    Background = Color3.fromRGB(12, 12, 14), Surface = Color3.fromRGB(18, 18, 22),
+    Element = Color3.fromRGB(26, 26, 32), ElementActive = Color3.fromRGB(52, 52, 64),
+    Stroke = Color3.fromRGB(45, 45, 54), TextPrimary = Color3.fromRGB(235, 235, 240),
+    TextSecondary = Color3.fromRGB(145, 145, 155), Danger = Color3.fromRGB(40, 22, 24),
+    DangerStroke = Color3.fromRGB(95, 40, 45)
+}
+
+local PartPatterns = {
+    Jaw = { "jaw", "mandible", "snout", "mouth", "bite", "muzzle", "beak" },
+    Head = { "head", "skull", "cranium", "neckhead" },
+    Body = { "chest", "ribcage", "abdomen", "bodyhitbox", "hitboxbody", "upperbody", "spine", "torso", "body", "pelvis" },
+    Tail = { "tail1", "tail_1", "tailbase", "tailstart", "tail" },
+    Leg = { "leg", "thigh", "calf", "shin", "foot", "ankle" }
+}
+
+-- 2. Утилиты
+local Utils = {}
+function Utils.Track(c) if c then table.insert(State.Connections, c) end return c end
+function Utils.Notify(t, x) pcall(function() StarterGui:SetCore("SendNotification", { Title = t, Text = x, Duration = 3 }) end) end
+function Utils.GuiParent()
+    local ok, p = pcall(function() if type(gethui) == "function" then return gethui() end return CoreGui end)
+    if ok and p then return p end
+    return LocalPlayer and LocalPlayer:WaitForChild("PlayerGui", 5) or CoreGui
+end
+function Utils.Style(i, r, sc, sw)
+    local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, r or 8); c.Parent = i
+    if sc then
+        local s = Instance.new("UIStroke"); s.Color = sc; s.Thickness = sw or 1; s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border; s.Parent = i
+    end
+end
+function Utils.Drag(tr, tf, cb)
+    local d, di, ds, sp, md = false, nil, nil, nil, 0
+    Utils.Track(tr.InputBegan:Connect(function(inp)
+        if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then
+            d = true; ds = inp.Position; sp = tf.Position; md = 0
+            local rc; rc = inp.Changed:Connect(function()
+                if inp.UserInputState == Enum.UserInputState.End then
+                    d = false; if rc then rc:Disconnect() end
+                    if md < 12 and cb then cb() end
+                end
+            end)
+        end
+    end))
+    Utils.Track(tr.InputChanged:Connect(function(inp) if inp.UserInputType == Enum.UserInputType.MouseMovement or inp.UserInputType == Enum.UserInputType.Touch then di = inp end end))
+    Utils.Track(UserInputService.InputChanged:Connect(function(inp)
+        if inp == di and d and ds and sp then
+            local dl = inp.Position - ds; md = dl.Magnitude
+            tf.Position = UDim2.new(sp.X.Scale, sp.X.Offset + dl.X, sp.Y.Scale, sp.Y.Offset + dl.Y)
+        end
+    end))
+end
+
+-- 3. Логика Aim и ESP
+local function GetEnemy(part)
+    if not part or not part:IsA("BasePart") then return nil end
+    local char = LocalPlayer.Character
+    if char and (part == char or part:IsDescendantOf(char)) then return nil end
+    
+    local cur = part.Parent
+    while cur and cur ~= Workspace do
+        if cur:IsA("Model") and (cur:FindFirstChildOfClass("Humanoid") or cur:FindFirstChild("Head", true)) then
+            return cur
+        end
+        cur = cur.Parent
+    end
+    return nil
+end
+
+local function FindPartByCat(model, cat)
+    for _, d in ipairs(model:GetDescendants()) do
+        if d:IsA("BasePart") then
+            local n = string.lower(d.Name)
+            for _, pat in ipairs(PartPatterns[cat]) do
+                if string.find(n, pat, 1, true) then return d end
+            end
+        end
+    end
+    return nil
+end
+
+-- Хук для Silent Aim
+if not Env.PriorUI2_Hook then
+    pcall(function()
+        local oldNamecall
+        oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+            local cs = Env.PriorUI2_State
+            if cs and cs.Active and cs.SilentAim then
+                local method = getnamecallmethod()
+                if method == "FireServer" or method == "InvokeServer" then
+                    local args = { ... }
+                    local modified = false
+                    
+                    for i, arg in ipairs(args) do
+                        if typeof(arg) == "Instance" and arg:IsA("BasePart") then
+                            local enemy = GetEnemy(arg)
+                            if enemy then
+                                local targetPart = FindPartByCat(enemy, cs.AimPart)
+                                if targetPart then
+                                    args[i] = targetPart
+                                    modified = true
+                                end
+                            end
+                        end
+                    end
+                    
+                    if modified then
+                        return oldNamecall(self, table.unpack(args))
+                    end
+                end
+            end
+            return oldNamecall(self, ...)
+        end)
+        Env.PriorUI2_Hook = true
+    end)
+end
+
+-- Логика ESP
+local espFolder = Instance.new("Folder"); espFolder.Name = "PE2_ESP"; pcall(function() espFolder.Parent = Utils.GuiParent() end)
+local espGuis = {}
+
+local function UpdateESP()
+    local myPos = Workspace.CurrentCamera.CFrame.Position
+    
+    if not State.ESPEnabled then
+        for _, data in pairs(espGuis) do if data.gui then data.gui.Enabled = false end end
+        return
+    end
+    
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local char = player.Character
+            local head = char:FindFirstChild("Head", true) or char.PrimaryPart
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            
+            if head and hum then
+                local dist = (myPos - head.Position).Magnitude
+                if dist <= State.ESPDistance then
+                    if not espGuis[player] then
+                        local bb = Instance.new("BillboardGui")
+                        bb.Name = "PE2_" .. player.Name
+                        bb.Size = UDim2.fromOffset(160, 40)
+                        bb.StudsOffset = Vector3.new(0, 4, 0)
+                        bb.AlwaysOnTop = true
+                        bb.Parent = espFolder
+                        
+                        local nameLbl = Instance.new("TextLabel")
+                        nameLbl.Size = UDim2.new(1, 0, 0, 15)
+                        nameLbl.BackgroundTransparency = 1
+                        nameLbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+                        nameLbl.TextStrokeTransparency = 0.1
+                        nameLbl.Font = Enum.Font.GothamBold
+                        nameLbl.TextSize = 12
+                        nameLbl.Parent = bb
+                        
+                        local hpBg = Instance.new("Frame")
+                        hpBg.Size = UDim2.new(1, 0, 0, 16)
+                        hpBg.Position = UDim2.new(0, 0, 0, 18)
+                        hpBg.BackgroundColor3 = Color3.fromRGB(24, 24, 28)
+                        hpBg.Parent = bb
+                        Utils.Style(hpBg, 4, Color3.fromRGB(0, 0, 0), 1)
+                        
+                        local hpFill = Instance.new("Frame")
+                        hpFill.Size = UDim2.new(1, 0, 1, 0)
+                        hpFill.BackgroundColor3 = Color3.fromRGB(65, 235, 85)
+                        hpFill.Parent = hpBg
+                        Utils.Style(hpFill, 4, nil)
+                        
+                        local hpText = Instance.new("TextLabel")
+                        hpText.Size = UDim2.fromScale(1, 1)
+                        hpText.BackgroundTransparency = 1
+                        hpText.TextColor3 = Color3.fromRGB(255, 255, 255)
+                        hpText.TextStrokeTransparency = 0.05
+                        hpText.Font = Enum.Font.GothamBold
+                        hpText.TextSize = 10
+                        hpText.ZIndex = 3
+                        hpText.Parent = hpBg
+                        
+                        espGuis[player] = { gui = bb, name = nameLbl, hpBg = hpBg, hpFill = hpFill, hpText = hpText }
+                    end
+                    
+                    local data = espGuis[player]
+                    data.gui.Adornee = head
+                    data.gui.Enabled = true
+                    
+                    data.name.Text = string.format("[%dm] %s", math.floor(dist), player.DisplayName)
+                    
+                    if State.ESPHealth then
+                        data.hpBg.Visible = true
+                        local hpRatio = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
+                        data.hpFill.Size = UDim2.new(hpRatio, 0, 1, 0)
+                        data.hpText.Text = string.format("HP: %d / %d", math.floor(hum.Health), math.floor(hum.MaxHealth))
+                        
+                        if hpRatio < 0.3 then data.hpFill.BackgroundColor3 = Color3.fromRGB(235, 65, 65)
+                        elseif hpRatio < 0.65 then data.hpFill.BackgroundColor3 = Color3.fromRGB(240, 190, 50)
+                        else data.hpFill.BackgroundColor3 = Color3.fromRGB(60, 215, 80) end
+                    else
+                        data.hpBg.Visible = false
+                    end
+                else
+                    if espGuis[player] then espGuis[player].gui.Enabled = false end
+                end
+            end
+        end
+    end
+end
+
+Utils.Track(RunService.RenderStepped:Connect(UpdateESP))
+
+-- 4. Меню (UI)
+local ScreenGui = Instance.new("ScreenGui"); ScreenGui.Name = "PriorExtinction_UI2"; ScreenGui.ResetOnSpawn = false; pcall(function() ScreenGui.Parent = Utils.GuiParent() end)
+local TargetSize, IconSize = UDim2.fromOffset(450, 280), UDim2.fromOffset(50, 50)
+local MainFrame = Instance.new("Frame"); MainFrame.AnchorPoint = Vector2.new(0.5, 0.5); MainFrame.Position = UDim2.fromScale(0.5, 0.5); MainFrame.Size = UDim2.fromOffset(0, 0); MainFrame.BackgroundColor3 = Theme.Background; MainFrame.ClipsDescendants = true; MainFrame.Parent = ScreenGui; Utils.Style(MainFrame, 12, Theme.Stroke, 1.2)
+local TopBar = Instance.new("Frame"); TopBar.Size = UDim2.new(1, 0, 0, 42); TopBar.BackgroundColor3 = Theme.Surface; TopBar.Parent = MainFrame; Utils.Style(TopBar, 12, nil)
+local TitleLabel = Instance.new("TextLabel"); TitleLabel.Size = UDim2.new(1, -120, 1, 0); TitleLabel.Position = UDim2.fromOffset(15, 0); TitleLabel.BackgroundTransparency = 1; TitleLabel.Text = "PRIOR EXTINCTION // SCRIPT 2"; TitleLabel.TextColor3 = Theme.TextPrimary; TitleLabel.Font = Enum.Font.GothamBold; TitleLabel.TextSize = 13; TitleLabel.TextXAlignment = Enum.TextXAlignment.Left; TitleLabel.Parent = TopBar
+local MinimizeBtn = Instance.new("TextButton"); MinimizeBtn.Size = UDim2.fromOffset(32, 28); MinimizeBtn.Position = UDim2.new(1, -40, 0.5, -14); MinimizeBtn.BackgroundColor3 = Theme.Element; MinimizeBtn.Text = "—"; MinimizeBtn.TextColor3 = Theme.TextPrimary; MinimizeBtn.Font = Enum.Font.GothamBold; MinimizeBtn.TextSize = 14; MinimizeBtn.Parent = TopBar; Utils.Style(MinimizeBtn, 6, Theme.Stroke, 1)
+local MiniIcon = Instance.new("TextButton"); MiniIcon.AnchorPoint = Vector2.new(0.5, 0.5); MiniIcon.Position = UDim2.new(0.1, 0, 0.2, 0); MiniIcon.Size = UDim2.fromOffset(0, 0); MiniIcon.BackgroundColor3 = Theme.Surface; MiniIcon.Text = "PE2"; MiniIcon.TextColor3 = Theme.TextPrimary; MiniIcon.Font = Enum.Font.GothamBold; MiniIcon.TextSize = 14; MiniIcon.Visible = false; MiniIcon.Parent = ScreenGui; Utils.Style(MiniIcon, 25, Theme.Stroke, 1.5)
+local Sidebar = Instance.new("Frame"); Sidebar.Size = UDim2.new(0, 120, 1, -42); Sidebar.Position = UDim2.fromOffset(0, 42); Sidebar.BackgroundColor3 = Theme.Surface; Sidebar.Parent = MainFrame
+local TabList = Instance.new("ScrollingFrame"); TabList.Size = UDim2.new(1, -16, 1, -66); TabList.Position = UDim2.fromOffset(8, 10); TabList.BackgroundTransparency = 1; TabList.ScrollBarThickness = 0; TabList.CanvasSize = UDim2.new(0, 0, 0, 0); TabList.AutomaticCanvasSize = Enum.AutomaticSize.Y; TabList.Parent = Sidebar
+local TabListLayout = Instance.new("UIListLayout"); TabListLayout.Padding = UDim.new(0, 6); TabListLayout.Parent = TabList
+local DeactivateBtn = Instance.new("TextButton"); DeactivateBtn.Size = UDim2.new(1, -16, 0, 38); DeactivateBtn.Position = UDim2.new(0, 8, 1, -46); DeactivateBtn.BackgroundColor3 = Theme.Danger; DeactivateBtn.Text = "Unload"; DeactivateBtn.TextColor3 = Theme.TextPrimary; DeactivateBtn.Font = Enum.Font.GothamSemibold; DeactivateBtn.TextSize = 13; DeactivateBtn.Parent = Sidebar; Utils.Style(DeactivateBtn, 8, Theme.DangerStroke, 1)
+local PagesContainer = Instance.new("Frame"); PagesContainer.Size = UDim2.new(1, -120, 1, -42); PagesContainer.Position = UDim2.fromOffset(120, 42); PagesContainer.BackgroundTransparency = 1; PagesContainer.Parent = MainFrame
+local Tabs = {}; local CurrentTab = nil
+local function SelectTab(tabName) for name, data in pairs(Tabs) do local isSelected = (name == tabName); data.Page.Visible = isSelected; data.Button.BackgroundColor3 = isSelected and Theme.ElementActive or Theme.Element; data.Button.TextColor3 = isSelected and Theme.TextPrimary or Theme.TextSecondary end; CurrentTab = tabName end
+local function CreateTab(tabName)
+    local btn = Instance.new("TextButton"); btn.Size = UDim2.new(1, 0, 0, 38); btn.BackgroundColor3 = Theme.Element; btn.Text = tabName; btn.TextColor3 = Theme.TextSecondary; btn.Font = Enum.Font.GothamMedium; btn.TextSize = 13; btn.Parent = TabList; Utils.Style(btn, 8, Theme.Stroke, 1)
+    local page = Instance.new("ScrollingFrame"); page.Size = UDim2.new(1, -20, 1, -20); page.Position = UDim2.fromOffset(10, 10); page.BackgroundTransparency = 1; page.ScrollBarThickness = 2; page.CanvasSize = UDim2.new(0, 0, 0, 0); page.AutomaticCanvasSize = Enum.AutomaticSize.Y; page.Visible = false; page.Parent = PagesContainer
+    local layout = Instance.new("UIListLayout"); layout.Padding = UDim.new(0, 8); layout.SortOrder = Enum.SortOrder.LayoutOrder; layout.Parent = page
+    Utils.Track(btn.Activated:Connect(function() SelectTab(tabName) end))
+    Tabs[tabName] = { Button = btn, Page = page }; if not CurrentTab then SelectTab(tabName) end; return page
+end
+local function CreateToggle(parent, text, defaultState, order, callback)
+    local btn = Instance.new("TextButton"); btn.LayoutOrder = order; btn.Size = UDim2.new(1, 0, 0, 42); btn.BackgroundColor3 = Theme.Surface; btn.Text = ""; btn.AutoButtonColor = false; btn.Parent = parent; Utils.Style(btn, 8, Theme.Stroke, 1)
+    local lbl = Instance.new("TextLabel"); lbl.Size = UDim2.new(1, -70, 1, 0); lbl.Position = UDim2.fromOffset(12, 0); lbl.BackgroundTransparency = 1; lbl.Text = text; lbl.TextColor3 = Theme.TextPrimary; lbl.Font = Enum.Font.GothamMedium; lbl.TextSize = 13; lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.Parent = btn
+    local ind = Instance.new("Frame"); ind.Size = UDim2.fromOffset(40, 22); ind.Position = UDim2.new(1, -52, 0.5, -11); ind.BackgroundColor3 = defaultState and Theme.ElementActive or Theme.Element; ind.Parent = btn; Utils.Style(ind, 11, Theme.Stroke, 1)
+    local kn = Instance.new("Frame"); kn.Size = UDim2.fromOffset(16, 16); kn.Position = defaultState and UDim2.fromOffset(21, 3) or UDim2.fromOffset(3, 3); kn.BackgroundColor3 = defaultState and Theme.TextPrimary or Theme.TextSecondary; kn.Parent = ind; Utils.Style(kn, 8, nil)
+    local state = defaultState
+    Utils.Track(btn.Activated:Connect(function() state = not state; ind.BackgroundColor3 = state and Theme.ElementActive or Theme.Element; kn.Position = state and UDim2.fromOffset(21, 3) or UDim2.fromOffset(3, 3); kn.BackgroundColor3 = state and Theme.TextPrimary or Theme.TextSecondary; if callback then pcall(callback, state) end end))
+end
+local function CreateCycleButton(parent, labelPrefix, options, defaultIndex, order, callback)
+    local idx = defaultIndex or 1
+    local btn = Instance.new("TextButton"); btn.LayoutOrder = order; btn.Size = UDim2.new(1, 0, 0, 42); btn.BackgroundColor3 = Theme.Element; btn.Text = labelPrefix .. ": " .. tostring(options[idx]); btn.TextColor3 = Theme.TextPrimary; btn.Font = Enum.Font.GothamSemibold; btn.TextSize = 13; btn.Parent = parent; Utils.Style(btn, 8, Theme.Stroke, 1)
+    Utils.Track(btn.Activated:Connect(function() idx = (idx % #options) + 1; btn.Text = labelPrefix .. ": " .. tostring(options[idx]); if callback then pcall(callback, options[idx], idx) end end))
+end
+
+local CombatPage = CreateTab("Combat"); local RenderPage = CreateTab("Render")
+
+CreateToggle(CombatPage, "Silent Aim (Наведение)", State.SilentAim, 1, function(v) State.SilentAim = v end)
+CreateCycleButton(CombatPage, "Цель Aim", { "Head", "Jaw", "Body", "Tail", "Leg" }, 1, 2, function(opt) State.AimPart = opt end)
+
+CreateToggle(RenderPage, "ESP Игроков", State.ESPEnabled, 1, function(v) State.ESPEnabled = v end)
+CreateToggle(RenderPage, "Показывать HP", State.ESPHealth, 2, function(v) State.ESPHealth = v end)
+CreateCycleButton(RenderPage, "Дистанция ESP", { 1000, 2000, 3500, 5000 }, 2, 3, function(val) State.ESPDistance = val end)
+
+local function MinimizeUI() if State.Minimized then return end State.Minimized = true; MainFrame.Visible = false; MiniIcon.Size = IconSize; MiniIcon.Visible = true end
+local function RestoreUI() if not State.Minimized then return end State.Minimized = false; MiniIcon.Visible = false; MainFrame.Visible = true end
+local function DeactivateScript()
+    if not State.Active then return end
+    State.Active = false; State.SilentAim = false; State.ESPEnabled = false
+    for _, conn in ipairs(State.Connections) do pcall(function() conn:Disconnect() end) end
+    if espFolder then pcall(function() espFolder:Destroy() end) end
+    pcall(function() ScreenGui:Destroy() end)
+    Env.PriorUI2_Cleanup = nil
+    Utils.Notify("Prior 2", "Скрипт выгружен.")
+end
+Env.PriorUI2_Cleanup = DeactivateScript
+Utils.Drag(TopBar, MainFrame, nil); Utils.Drag(MiniIcon, MiniIcon, RestoreUI)
+Utils.Track(MinimizeBtn.Activated:Connect(MinimizeUI)); Utils.Track(DeactivateBtn.Activated:Connect(DeactivateScript))
+
+task.spawn(function() pcall(function() TweenService:Create(MainFrame, TweenInfo.new(0.45, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Size = TargetSize }):Play() end) end)
