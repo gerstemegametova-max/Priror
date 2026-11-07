@@ -1,5 +1,5 @@
 -- ═══════════════════════════════════════════════════════════════════════
--- BLACKHAWK RESCUE MISSION 5 // ULTIMATE (Aimbot + ESP + Hitbox)
+-- BLACKHAWK RESCUE MISSION 5 // ULTIMATE (Aimbot + FOV Circle + ESP)
 -- ═══════════════════════════════════════════════════════════════════════
 print("[BRM5] Запуск скрипта...")
 local Players = game:GetService("Players")
@@ -36,7 +36,6 @@ local Theme = {
     DangerStroke = Color3.fromRGB(95, 40, 45)
 }
 
--- Паттерны для обычных персонажей (R6/R15)
 local PartPatterns = {
     Head = { "head" },
     Body = { "torso", "upper torso", "lower torso", "humanoidrootpart" },
@@ -73,7 +72,7 @@ function Utils.Drag(tr, tf, cb)
     end))
 end
 
--- 3. Основные функции (Поиск частей, Проверка стен)
+-- 3. Основные функции
 local function FindPartByCat(model, cat)
     for _, d in ipairs(model:GetDescendants()) do
         if d:IsA("BasePart") then
@@ -88,12 +87,9 @@ local function HasLineOfSight(targetPart)
     if not targetPart then return false end
     local origin = Camera.CFrame.Position
     local direction = targetPart.Position - origin
-    
     local raycastParams = RaycastParams.new()
-    -- Игнорируем себя и саму цель
     raycastParams.FilterDescendantsInstances = { LocalPlayer.Character, Camera, targetPart.Parent }
     raycastParams.FilterType = Enum.RaycastFilterType.Exclude
-    
     local result = Workspace:Raycast(origin, direction, raycastParams)
     return result == nil or result.Instance:IsDescendantOf(targetPart.Parent)
 end
@@ -103,7 +99,6 @@ local CachedOriginalHitboxes = {}
 
 local function UpdateAimbot()
     if not State.AimbotEnabled or not LocalPlayer.Character then return end
-    
     local closestTarget = nil
     local shortestDistance = State.FOV
     
@@ -115,7 +110,7 @@ local function UpdateAimbot()
                 if onScreen then
                     local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
                     local distanceToCenter = (Vector2.new(screenPos.X, screenPos.Y) - screenCenter).Magnitude
-                    
+                    -- Проверка: враг должен быть ВНУТРИ круга FOV
                     if distanceToCenter < shortestDistance then
                         shortestDistance = distanceToCenter
                         closestTarget = targetPart
@@ -126,7 +121,6 @@ local function UpdateAimbot()
     end
     
     if closestTarget then
-        -- Плавный поворот камеры (Aimbot)
         local targetCFrame = CFrame.new(Camera.CFrame.Position, closestTarget.Position)
         Camera.CFrame = Camera.CFrame:Lerp(targetCFrame, State.Smoothness)
     end
@@ -168,7 +162,6 @@ local function UpdateRadius()
         if radiusCircle then radiusCircle.Transparency = 1 end
         return
     end
-    
     if not radiusCircle then
         radiusCircle = Instance.new("Part")
         radiusCircle.Shape = Enum.PartType.Cylinder
@@ -180,8 +173,8 @@ local function UpdateRadius()
         radiusCircle.Transparency = 0.8
         radiusCircle.Parent = Workspace
     end
-    
     if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+        radiusCircle.Size = Vector3.new(1, State.ESPDistance * 2, State.ESPDistance * 2)
         radiusCircle.CFrame = LocalPlayer.Character.HumanoidRootPart.CFrame * CFrame.new(0, -3, 0) * CFrame.Angles(0, 0, math.rad(90))
         radiusCircle.Transparency = 0.8
     end
@@ -194,45 +187,36 @@ local function UpdateESP()
         for _, hl in pairs(highlights) do hl.Enabled = false end
         return
     end
-    
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= LocalPlayer and player.Character then
             local char = player.Character
             local head = char:FindFirstChild("Head")
             local hum = char:FindFirstChildOfClass("Humanoid")
-            
             if head and hum then
                 local dist = (myPos - head.Position).Magnitude
                 local isVisible = HasLineOfSight(head)
-                
                 if dist <= State.ESPDistance and isVisible then
                     if not espGuis[player] then
-                        -- Создаем UI
                         local bb = Instance.new("BillboardGui"); bb.Size = UDim2.fromOffset(160, 40); bb.StudsOffset = Vector3.new(0, 3, 0); bb.AlwaysOnTop = true; bb.Parent = espFolder
                         local nameLbl = Instance.new("TextLabel"); nameLbl.Size = UDim2.new(1, 0, 0, 14); nameLbl.BackgroundTransparency = 1; nameLbl.TextColor3 = Color3.fromRGB(255, 255, 255); nameLbl.TextStrokeTransparency = 0.1; nameLbl.Font = Enum.Font.GothamBold; nameLbl.TextSize = 11; nameLbl.Parent = bb
                         local hpBg = Instance.new("Frame"); hpBg.Size = UDim2.new(1, 0, 0, 12); hpBg.Position = UDim2.new(0, 0, 0, 16); hpBg.BackgroundColor3 = Color3.fromRGB(24, 24, 28); hpBg.Parent = bb; Utils.Style(hpBg, 3, Color3.fromRGB(0, 0, 0), 1)
                         local hpFill = Instance.new("Frame"); hpFill.Size = UDim2.new(1, 0, 1, 0); hpFill.BackgroundColor3 = Color3.fromRGB(65, 235, 85); hpFill.Parent = hpBg; Utils.Style(hpFill, 3, nil)
                         local hpText = Instance.new("TextLabel"); hpText.Size = UDim2.fromScale(1, 1); hpText.BackgroundTransparency = 1; hpText.TextColor3 = Color3.fromRGB(255, 255, 255); hpText.TextStrokeTransparency = 0.05; hpText.Font = Enum.Font.GothamBold; hpText.TextSize = 9; hpText.ZIndex = 3; hpText.Parent = hpBg
-                        
                         espGuis[player] = { gui = bb, name = nameLbl, hpBg = hpBg, hpFill = hpFill, hpText = hpText }
                     end
-                    
-                    -- Highlight (Обводка)
                     if State.ESPOutline and not highlights[player] then
                         local hl = Instance.new("Highlight")
-                        hl.DepthMode = Enum.HighlightDepthMode.Occlusion -- Не видно сквозь стены
+                        hl.DepthMode = Enum.HighlightDepthMode.Occlusion
                         hl.FillColor = Color3.fromRGB(255, 50, 50)
                         hl.FillTransparency = 0.5
                         hl.OutlineColor = Color3.fromRGB(255, 50, 50)
                         hl.Parent = char
                         highlights[player] = hl
                     end
-                    
                     local data = espGuis[player]
                     data.gui.Adornee = head
                     data.gui.Enabled = true
                     data.name.Text = string.format("[%dm] %s", math.floor(dist), player.DisplayName)
-                    
                     if State.ESPHealth then
                         data.hpBg.Visible = true
                         local hpRatio = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
@@ -242,7 +226,6 @@ local function UpdateESP()
                     else
                         data.hpBg.Visible = false
                     end
-                    
                 else
                     if espGuis[player] then espGuis[player].gui.Enabled = false end
                     if highlights[player] then highlights[player].Enabled = false end
@@ -252,9 +235,45 @@ local function UpdateESP()
     end
 end
 
--- 6. Меню
-local ScreenGui = Instance.new("ScreenGui"); ScreenGui.Name = "BRM5_UI"; ScreenGui.ResetOnSpawn = false; pcall(function() ScreenGui.Parent = Utils.GuiParent() end)
-local TargetSize, IconSize = UDim2.fromOffset(450, 300), UDim2.fromOffset(50, 50)
+-- 6. Меню и FOV Круг
+local ScreenGui = Instance.new("ScreenGui"); ScreenGui.Name = "BRM5_UI"; ScreenGui.ResetOnSpawn = false; ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling; pcall(function() ScreenGui.Parent = Utils.GuiParent() end)
+
+-- FOV Circle (визуальный круг аимбота)
+local fovCircle = Instance.new("Frame")
+fovCircle.Name = "AimbotFOV"
+fovCircle.AnchorPoint = Vector2.new(0.5, 0.5)
+fovCircle.Position = UDim2.fromScale(0.5, 0.5)
+fovCircle.BackgroundTransparency = 1
+fovCircle.BorderSizePixel = 0
+fovCircle.Visible = false
+fovCircle.ZIndex = 0
+fovCircle.Parent = ScreenGui
+
+local fovCorner = Instance.new("UICorner")
+fovCorner.CornerRadius = UDim.new(1, 0)
+fovCorner.Parent = fovCircle
+
+local fovStroke = Instance.new("UIStroke")
+fovStroke.Color = Color3.fromRGB(255, 50, 50)
+fovStroke.Thickness = 2
+fovStroke.Transparency = 0.3
+fovStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+fovStroke.Parent = fovCircle
+
+-- Обновление FOV круга в реальном времени
+task.spawn(function()
+    while State.Active do
+        pcall(function()
+            if fovCircle then
+                fovCircle.Visible = State.AimbotEnabled
+                fovCircle.Size = UDim2.fromOffset(State.FOV * 2, State.FOV * 2)
+            end
+        end)
+        task.wait(0.1)
+    end
+end)
+
+local TargetSize, IconSize = UDim2.fromOffset(450, 320), UDim2.fromOffset(50, 50)
 local MainFrame = Instance.new("Frame"); MainFrame.AnchorPoint = Vector2.new(0.5, 0.5); MainFrame.Position = UDim2.fromScale(0.5, 0.5); MainFrame.Size = UDim2.fromOffset(0, 0); MainFrame.BackgroundColor3 = Theme.Background; MainFrame.ClipsDescendants = true; MainFrame.Parent = ScreenGui; Utils.Style(MainFrame, 12, Theme.Stroke, 1.2)
 local TopBar = Instance.new("Frame"); TopBar.Size = UDim2.new(1, 0, 0, 42); TopBar.BackgroundColor3 = Theme.Surface; TopBar.Parent = MainFrame; Utils.Style(TopBar, 12, nil)
 local TitleLabel = Instance.new("TextLabel"); TitleLabel.Size = UDim2.new(1, -120, 1, 0); TitleLabel.Position = UDim2.fromOffset(15, 0); TitleLabel.BackgroundTransparency = 1; TitleLabel.Text = "BLACKHAWK RM5 // ULTIMATE"; TitleLabel.TextColor3 = Theme.TextPrimary; TitleLabel.Font = Enum.Font.GothamBold; TitleLabel.TextSize = 13; TitleLabel.TextXAlignment = Enum.TextXAlignment.Left; TitleLabel.Parent = TopBar
@@ -296,8 +315,13 @@ CreateCycleButton(CombatPage, "Цель Aimbot", { "Head", "Body", "HumanoidRoot
 end)
 CreateCycleButton(CombatPage, "Плавность Aimbot", { "0.1 (Медленно)", "0.25 (Средне)", "0.5 (Быстро)", "1.0 (Мгновенно)" }, 2, 3, function(_, idx) State.Smoothness = ({0.1, 0.25, 0.5, 1.0})[idx] end)
 
-CreateToggle(CombatPage, "Hitbox Expander (Увеличение)", State.HitboxEnabled, 4, function(v) State.HitboxEnabled = v end)
-CreateCycleButton(CombatPage, "Размер Hitbox", { "8", "12", "15", "20", "30" }, 3, 5, function(_, idx) State.HitboxSize = ({8, 12, 15, 20, 30})[idx] end)
+-- НОВОЕ: Радиус круга аимбота
+CreateCycleButton(CombatPage, "Радиус FOV (Круг)", { "100", "150", "200", "250", "350", "500", "700" }, 4, 4, function(_, idx) 
+    State.FOV = ({100, 150, 200, 250, 350, 500, 700})[idx] 
+end)
+
+CreateToggle(CombatPage, "Hitbox Expander (Увеличение)", State.HitboxEnabled, 5, function(v) State.HitboxEnabled = v end)
+CreateCycleButton(CombatPage, "Размер Hitbox", { "8", "12", "15", "20", "30" }, 3, 6, function(_, idx) State.HitboxSize = ({8, 12, 15, 20, 30})[idx] end)
 
 CreateToggle(RenderPage, "ESP Игроков (Не сквозь стены)", State.ESPEnabled, 1, function(v) State.ESPEnabled = v end)
 CreateToggle(RenderPage, "Обводка (Highlight)", State.ESPOutline, 2, function(v) State.ESPOutline = v end)
@@ -314,6 +338,7 @@ local function DeactivateScript()
     for _, hl in pairs(highlights) do pcall(function() hl:Destroy() end) end
     if espFolder then pcall(function() espFolder:Destroy() end) end
     if radiusCircle then pcall(function() radiusCircle:Destroy() end) end
+    if fovCircle then pcall(function() fovCircle:Destroy() end) end
     pcall(function() ScreenGui:Destroy() end)
     Env.BRM5_Cleanup = nil
     Utils.Notify("BRM5", "Скрипт выгружен.")
@@ -322,7 +347,6 @@ Env.BRM5_Cleanup = DeactivateScript
 Utils.Drag(TopBar, MainFrame, nil); Utils.Drag(MiniIcon, MiniIcon, RestoreUI)
 Utils.Track(MinimizeBtn.Activated:Connect(MinimizeUI)); Utils.Track(DeactivateBtn.Activated:Connect(DeactivateScript))
 
--- Главный цикл
 Utils.Track(RunService.RenderStepped:Connect(function()
     if not State.Active then return end
     UpdateHitboxes()
