@@ -1,5 +1,5 @@
--- Prior Extinction // Ultimate Mobile (Fixed Persistent Reach, Hitbox & Deep SilentAim + Species ESP + Unlock Camera)
-print("[PE] Запуск исправленной боевой версии...")
+-- Prior Extinction // Ultimate Mobile (Fixed NoSleepScreen + Persistent Reach & Hitbox + Deep SilentAim + Species ESP)
+print("[PE] Запуск полной исправленной версии...")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -20,15 +20,12 @@ local State = {
     SilentAim = false, AimTargetPart = "Head",
     HitboxMaster = false, HitboxTransparency = 0.75, HitboxTransLevel = 3, HitboxSizeLevel = 3, SelectedHitboxPart = "Head",
     NoAttackCD = false,
-    -- Пропорциональный Reach + настраиваемая прозрачность
     ReachEnabled = false, ReachScaleLevel = 3, ReachTransparency = 0.75, ReachTransLevel = 3,
     ReachParts = { Jaw = true, Head = true, Tail = false, Leg = false, Body = false },
-    -- Render & Camera
     ESPEnabled = false, ESPMaxDistance = 2000, ESP_Health = true, ESP_Stamina = true, ESP_Species = true,
     ESPBones = false, ESPCorpses = false, WorldESPMaxDistance = 2000,
     NightVision = false, NoBlur = false, NoSleepScreen = false,
     UnlockCamera = false,
-    -- Tools
     AutoClean = false,
     SaveDinoEnabled = false, SaveDinoMode = "Down", SaveDinoOffset = 70,
     SaveDinoOriginalCFrame = nil, SaveDinoTargetCFrame = nil, SaveDinoCurrentCFrame = nil,
@@ -69,7 +66,6 @@ local ReachLabels = { "0.5x (Уменьш.)", "14м (Форма)", "22м (Фор
 local TransValues = { 0.2, 0.5, 0.75, 0.9, 1.0 }
 local TransLabels = { "0.2 (Яркий)", "0.5 (Средний)", "0.75 (Слабый)", "0.9 (Почти невид.)", "1.0 (Невидимый)" }
 
--- Чистые анатомические паттерны (только по имени самой детали, без ложного срабатывания на папку Hitboxes)
 local PartPatterns = {
     Jaw = { "jaw", "mandible", "snout", "mouth", "bite", "muzzle", "beak", "fang", "teeth" },
     Head = { "head", "skull", "cranium", "neckhead", "horn", "crest", "frill", "throat" },
@@ -126,10 +122,31 @@ function Utils.DeepClone(tbl, seen)
     return copy
 end
 
--- 3. Visuals & Unlock Camera
+-- 3. Visuals & Unlock Camera (Исправленный No Sleep Screen с кэшем шторок сна)
 local Visuals = {}
 local wasNightVision = false
 local wasUnlockCam = false
+local SleepBlackouts = {}
+local MainFrameRef = nil
+
+local function CheckIfSleepOverlay(g)
+    if not g or not g.Parent then return end
+    if MainFrameRef and g:IsDescendantOf(MainFrameRef) then return end
+    if g:IsA("Frame") or g:IsA("ImageLabel") or g:IsA("CanvasGroup") then
+        local n = string.lower(g.Name)
+        local pn = g.Parent and string.lower(g.Parent.Name) or ""
+        local isSleepName = string.find(n, "sleep", 1, true) or string.find(n, "rest", 1, true)
+            or string.find(n, "blink", 1, true) or string.find(n, "black", 1, true)
+            or string.find(n, "fade", 1, true) or string.find(n, "vignette", 1, true)
+            or string.find(n, "blind", 1, true) or string.find(n, "eye", 1, true)
+            or string.find(pn, "sleep", 1, true) or string.find(pn, "vignette", 1, true)
+
+        local isFullScreen = (g.Size.X.Scale >= 0.85 and g.Size.Y.Scale >= 0.85)
+        if isSleepName or isFullScreen then
+            SleepBlackouts[g] = true
+        end
+    end
+end
 
 local function ProcessPostEffects(container)
     if not container then return end
@@ -139,8 +156,13 @@ local function ProcessPostEffects(container)
             if e:IsA("BlurEffect") then e.Size = 0 end
         end
         if State.NoSleepScreen and e:IsA("ColorCorrectionEffect") then
+            local en = string.lower(e.Name)
+            if string.find(en, "sleep", 1, true) or string.find(en, "rest", 1, true) or string.find(en, "blind", 1, true) or string.find(en, "dark", 1, true) then
+                e.Enabled = false
+            end
             if e.Brightness < 0 then e.Brightness = 0 end
             if e.Contrast < 0 then e.Contrast = 0 end
+            if e.Saturation < -0.2 then e.Saturation = 0 end
             if e.TintColor.R < 0.85 or e.TintColor.G < 0.85 or e.TintColor.B < 0.85 then
                 e.TintColor = Color3.fromRGB(255, 255, 255)
             end
@@ -148,7 +170,70 @@ local function ProcessPostEffects(container)
     end
 end
 
+function Visuals.ScanSleepGui()
+    local pg = LocalPlayer:FindFirstChild("PlayerGui")
+    if not pg then return end
+    pcall(function()
+        for _, g in ipairs(pg:GetDescendants()) do
+            CheckIfSleepOverlay(g)
+        end
+    end)
+end
+
 function Visuals.Init()
+    Visuals.ScanSleepGui()
+    local pg = LocalPlayer:FindFirstChild("PlayerGui")
+    if pg then
+        Utils.Track(pg.DescendantAdded:Connect(function(desc)
+            task.defer(function() pcall(CheckIfSleepOverlay, desc) end)
+        end))
+    end
+
+    Utils.Track(RunService.RenderStepped:Connect(function()
+        if not State.Active then return end
+
+        if State.NoBlur or State.NoSleepScreen then
+            ProcessPostEffects(Lighting)
+            if Workspace.CurrentCamera then
+                ProcessPostEffects(Workspace.CurrentCamera)
+            end
+        end
+
+        if State.NoSleepScreen then
+            local cam = Workspace.CurrentCamera
+            local vp = cam and cam.ViewportSize or Vector2.new(800, 600)
+            for g in pairs(SleepBlackouts) do
+                if not g or not g.Parent then
+                    SleepBlackouts[g] = nil
+                elseif g.Visible then
+                    local isBig = (g.AbsoluteSize.X >= vp.X * 0.75 and g.AbsoluteSize.Y >= vp.Y * 0.75) or (g.Size.X.Scale >= 0.85 and g.Size.Y.Scale >= 0.85)
+                    if isBig then
+                        if g:IsA("Frame") then
+                            local c = g.BackgroundColor3
+                            if c.R < 0.22 and c.G < 0.22 and c.B < 0.22 and g.BackgroundTransparency < 0.98 then
+                                g.BackgroundTransparency = 1
+                            end
+                        elseif g:IsA("ImageLabel") then
+                            local ic = g.ImageColor3
+                            local bc = g.BackgroundColor3
+                            if ic.R < 0.25 and ic.G < 0.25 and ic.B < 0.25 and g.ImageTransparency < 0.98 then
+                                g.ImageTransparency = 1
+                            end
+                            if bc.R < 0.22 and bc.G < 0.22 and bc.B < 0.22 and g.BackgroundTransparency < 0.98 then
+                                g.BackgroundTransparency = 1
+                            end
+                        elseif g:IsA("CanvasGroup") and g.GroupTransparency < 0.98 then
+                            local c = g.GroupColor3
+                            if c.R < 0.25 and c.G < 0.25 and c.B < 0.25 then
+                                g.GroupTransparency = 1
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end))
+
     task.spawn(function()
         while State.Active do
             pcall(function()
@@ -179,15 +264,8 @@ function Visuals.Init()
                     wasNightVision = false
                     Visuals.RestoreLighting()
                 end
-
-                if State.NoBlur or State.NoSleepScreen then
-                    ProcessPostEffects(Lighting)
-                    if Workspace.CurrentCamera then
-                        ProcessPostEffects(Workspace.CurrentCamera)
-                    end
-                end
             end)
-            task.wait(0.25)
+            task.wait(0.2)
         end
     end)
 end
@@ -345,7 +423,6 @@ local Combat = {}
 local ZP = PhysicalProperties.new(0.0001, 0, 0, 0, 0)
 local CachedLocalGroups = nil
 
--- Проверяет ТОЛЬКО имя самой детали, чтобы папка "Hitboxes" не ломала категории
 local function matchCat(partName, fullTail)
     local l = string.lower(partName)
     for _, c in ipairs({ "Jaw", "Head", "Tail", "Leg", "Body" }) do
@@ -367,7 +444,6 @@ local function isLocal(m)
     return LocalPlayer.Character and (m == LocalPlayer.Character or m:IsDescendantOf(LocalPlayer.Character))
 end
 
--- Обязательная защита физического корня AssemblyRootPart (чтобы Reach и Hitbox не сбрасывались через 1 секунду!)
 local function isCritRoot(model, part)
     if not part or not model then return true end
     local l = string.lower(part.Name)
@@ -390,7 +466,6 @@ local function findPart(model, cat)
             return d
         end
     end
-    -- Резервный возврат: если выбранная часть (например Jaw) не найдена отдельно, возвращаем Head или любую боевую часть
     if cat == "Jaw" and c and c.Head and c.Head[1] then return c.Head[1] end
     if c and c.Body and c.Body[1] then return c.Body[1] end
     return model:FindFirstChild("Head", true)
@@ -426,14 +501,12 @@ function Combat.ScanModel(model, isSelf)
                 if c and cats[c] then
                     addUnique(c, d)
                 end
-                -- Если на детали есть TouchTransmitter (триггер укуса), добавляем её в Jaw дополнительно
                 if isSelf and d:FindFirstChildOfClass("TouchTransmitter") then
                     addUnique("Jaw", d)
                 end
             end
         end
 
-        -- Если у динозавра челюсть и голова — одна деталь, синхронизируем списки, чтобы и Jaw, и Head работали всегда
         if #cats.Jaw == 0 and #cats.Head > 0 then
             for _, hp in ipairs(cats.Head) do addUnique("Jaw", hp) end
         elseif #cats.Head == 0 and #cats.Jaw > 0 then
@@ -454,7 +527,6 @@ function Combat.ScanModel(model, isSelf)
     return cats
 end
 
--- Сохраняет вытянутую форму детали (не куб!), но гарантирует нужный боевой радиус
 local function GetProportionalSize(origSize, targetRange)
     if targetRange < 0 then
         return origSize * math.abs(targetRange)
@@ -479,7 +551,6 @@ local function IsCleanBridgePacket(arg1)
     return false
 end
 
--- Рекурсивный перехватчик таблиц для Silent Aim (проходит внутрь пакетов BridgeNet2 до 4 уровней вглубь)
 local function ProcessSilentAimTable(tbl, aimCat, depth)
     if depth > 4 then return false end
     local changed = false
@@ -508,7 +579,6 @@ local function ProcessSilentAimTable(tbl, aimCat, depth)
         end
     end
 
-    -- Если в этой таблице была заменена деталь врага, подставляем её точные координаты
     if lastTargetPart then
         for k, v in pairs(tbl) do
             if typeof(v) == "Vector3" then
@@ -572,7 +642,6 @@ if not Env.PriorUI_HookInstalled then
 end
 
 function Combat.Init()
-    -- 1. Фоновое обновление списков деталей (раз в 1.2 сек — не нагружает телефон)
     task.spawn(function()
         while State.Active do
             pcall(function()
@@ -595,7 +664,6 @@ function Combat.Init()
         end
     end)
 
-    -- 2. Быстрое удержание размеров (каждые 0.03 сек по готовому кэшу — игра не может сбросить Reach или Hitbox!)
     local lastApply = 0
     Utils.Track(RunService.Heartbeat:Connect(function()
         if not State.Active then return end
@@ -603,7 +671,6 @@ function Combat.Init()
         if (now - lastApply) < 0.03 then return end
         lastApply = now
 
-        -- Вражеские хитбоксы
         if State.HitboxMaster or next(State.OriginalParts) ~= nil then
             local tCat = State.SelectedHitboxPart
             local tSize = HitboxSizes[State.HitboxSizeLevel] or 25
@@ -655,7 +722,6 @@ function Combat.Init()
             end
         end
 
-        -- Локальный Reach (удерживается постоянно без сброса через секунду)
         local myChar = LocalPlayer.Character
         if myChar and myChar.Parent and CachedLocalGroups and (State.ReachEnabled or next(State.LocalOriginalParts) ~= nil) then
             local targetRange = ReachRanges[State.ReachScaleLevel] or 22
@@ -711,7 +777,6 @@ function Combat.Init()
         end
     end))
 
-    -- 3. No Attack CD
     task.spawn(function()
         while State.Active do
             if State.NoAttackCD then
@@ -1155,6 +1220,7 @@ end
 local ScreenGui = Instance.new("ScreenGui"); ScreenGui.Name = "PriorExtinction_UI"; ScreenGui.ResetOnSpawn = false; ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling; pcall(function() ScreenGui.Parent = Utils.GuiParent() end)
 local TargetSize, IconSize = UDim2.fromOffset(530, 340), UDim2.fromOffset(50, 50)
 local MainFrame = Instance.new("Frame"); MainFrame.AnchorPoint = Vector2.new(0.5, 0.5); MainFrame.Position = UDim2.fromScale(0.5, 0.5); MainFrame.Size = UDim2.fromOffset(0, 0); MainFrame.BackgroundColor3 = Theme.Background; MainFrame.ClipsDescendants = true; MainFrame.Parent = ScreenGui; Utils.Style(MainFrame, 12, Theme.Stroke, 1.2)
+MainFrameRef = MainFrame
 local TopBar = Instance.new("Frame"); TopBar.Size = UDim2.new(1, 0, 0, 42); TopBar.BackgroundColor3 = Theme.Surface; TopBar.Parent = MainFrame; Utils.Style(TopBar, 12, nil)
 local TitleLabel = Instance.new("TextLabel"); TitleLabel.Size = UDim2.new(1, -120, 1, 0); TitleLabel.Position = UDim2.fromOffset(15, 0); TitleLabel.BackgroundTransparency = 1; TitleLabel.Text = "PRIOR EXTINCTION // ULTIMATE"; TitleLabel.TextColor3 = Theme.TextPrimary; TitleLabel.Font = Enum.Font.GothamBold; TitleLabel.TextSize = 13; TitleLabel.TextXAlignment = Enum.TextXAlignment.Left; TitleLabel.Parent = TopBar
 local MinimizeBtn = Instance.new("TextButton"); MinimizeBtn.Size = UDim2.fromOffset(32, 28); MinimizeBtn.Position = UDim2.new(1, -40, 0.5, -14); MinimizeBtn.BackgroundColor3 = Theme.Element; MinimizeBtn.Text = "—"; MinimizeBtn.TextColor3 = Theme.TextPrimary; MinimizeBtn.Font = Enum.Font.GothamBold; MinimizeBtn.TextSize = 14; MinimizeBtn.Parent = TopBar; Utils.Style(MinimizeBtn, 6, Theme.Stroke, 1)
@@ -1224,7 +1290,10 @@ CreateToggle(RenderPage, "ESP Костей", State.ESPBones, 7, function(v) Stat
 CreateToggle(RenderPage, "ESP Еды / Трупов", State.ESPCorpses, 8, function(v) State.ESPCorpses = v; if v then ESPModule.ScanWorldItems() end end)
 CreateToggle(RenderPage, "Night Vision (Без тумана)", State.NightVision, 9, function(v) State.NightVision = v end)
 CreateToggle(RenderPage, "No Blur (Убрать размытие)", State.NoBlur, 10, function(v) State.NoBlur = v end)
-CreateToggle(RenderPage, "No Sleep Screen (Убрать темный экран)", State.NoSleepScreen, 11, function(v) State.NoSleepScreen = v end)
+CreateToggle(RenderPage, "No Sleep Screen (Убрать темный экран)", State.NoSleepScreen, 11, function(v)
+    State.NoSleepScreen = v
+    if v then Visuals.ScanSleepGui() end
+end)
 
 -- Вкладка Tools
 CreateToggle(ToolsPage, "Auto Clean (Вшитый пакет мытья)", State.AutoClean, 1, function(v)
