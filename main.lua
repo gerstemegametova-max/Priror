@@ -1,4 +1,4 @@
--- Prior Extinction // Ultimate Compact (Custom Transparency + Unlock Camera + Proportional Reach + AutoClean + ESP)
+-- Prior Extinction // Ultimate Compact (Fixed Proportional Reach + Dino Species ESP + Unlock Camera + AutoClean)
 print("[PE] Запуск обновленного скрипта...")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -20,11 +20,11 @@ local State = {
     SilentAim = false, AimTargetPart = "Head",
     HitboxMaster = false, HitboxTransparency = 0.75, HitboxTransLevel = 3, HitboxSizeLevel = 3, SelectedHitboxPart = "Head",
     NoAttackCD = false,
-    -- Пропорциональный Reach + настраиваемая прозрачность
-    ReachEnabled = false, ReachScaleLevel = 4, ReachTransparency = 0.75, ReachTransLevel = 3,
+    -- Исправленный пропорциональный Reach (сохраняет форму + дает реальную дальность укуса)
+    ReachEnabled = false, ReachScaleLevel = 3, ReachTransparency = 0.75, ReachTransLevel = 3,
     ReachParts = { Jaw = true, Head = true, Tail = false, Leg = false, Body = false },
     -- Render & Camera
-    ESPEnabled = false, ESPMaxDistance = 2000, ESP_Health = true, ESP_Stamina = true,
+    ESPEnabled = false, ESPMaxDistance = 2000, ESP_Health = true, ESP_Stamina = true, ESP_Species = true,
     ESPBones = false, ESPCorpses = false, WorldESPMaxDistance = 2000,
     NightVision = false, NoBlur = false, NoSleepScreen = false,
     UnlockCamera = false,
@@ -63,19 +63,19 @@ local Theme = {
 }
 
 local HitboxSizes = { 10, 16, 22, 28, 35 }
-local ReachMultipliers = { 0.5, 1.3, 1.6, 2.0, 2.5, 3.2, 4.0 }
-local ReachLabels = { "0.5x (Уменьш.)", "1.3x (Форма)", "1.6x (Форма)", "2.0x (Форма)", "2.5x (Форма)", "3.2x (Форма)", "4.0x (Форма)" }
+-- Отрицательное значение = уменьшение (0.5x), положительные = целевая длина самой длинной грани с сохранением всех пропорций формы
+local ReachRanges = { -0.5, 12, 20, 28, 38, 52 }
+local ReachLabels = { "0.5x (Уменьш.)", "12м (Форма)", "20м (Форма)", "28м (Форма)", "38м (Форма)", "52м (Форма)" }
 
--- Варианты прозрачности для Reach и Hitbox
 local TransValues = { 0.2, 0.5, 0.75, 0.9, 1.0 }
 local TransLabels = { "0.2 (Яркий)", "0.5 (Средний)", "0.75 (Слабый)", "0.9 (Почти невид.)", "1.0 (Невидимый)" }
 
 local PartPatterns = {
-    Jaw = { "jaw", "mandible", "snout", "mouth", "bite", "muzzle", "beak", "fang", "teeth" },
-    Head = { "head", "skull", "cranium", "neckhead", "horn", "crest" },
-    Tail = { "tail", "thago", "club", "rattle", "spike" },
-    Body = { "chest", "ribcage", "abdomen", "bodyhitbox", "hitboxbody", "upperbody", "spine", "torso", "body", "pelvis", "hip" },
-    Leg = { "leg", "thigh", "calf", "shin", "foot", "ankle", "claw", "arm", "hand", "forelimb", "toe" }
+    Jaw = { "jaw", "mandible", "snout", "mouth", "bite", "muzzle", "beak", "fang", "teeth", "attack", "damage", "hurt", "weap" },
+    Head = { "head", "skull", "cranium", "neckhead", "horn", "crest", "frill", "throat" },
+    Tail = { "tail", "thago", "club", "rattle", "spike", "fluke" },
+    Body = { "chest", "ribcage", "abdomen", "bodyhitbox", "hitboxbody", "upperbody", "spine", "torso", "body", "pelvis", "hip", "back", "stomach" },
+    Leg = { "leg", "thigh", "calf", "shin", "foot", "ankle", "claw", "arm", "hand", "forelimb", "toe", "wing", "talon" }
 }
 
 -- 2. Utils
@@ -152,18 +152,14 @@ function Visuals.Init()
     Utils.Track(RunService.RenderStepped:Connect(function()
         if not State.Active then return end
 
-        -- 1. Unlock Camera (Отдаление камеры без ограничений + проход сквозь препятствия)
         if State.UnlockCamera then
             wasUnlockCam = true
             LocalPlayer.CameraMaxZoomDistance = 100000
             LocalPlayer.CameraMinZoomDistance = 0.5
             LocalPlayer.DevCameraOcclusionMode = Enum.DevCameraOcclusionMode.Invisicam
             local cam = Workspace.CurrentCamera
-            if cam and cam.CameraType == Enum.CameraType.Scriptable then
-                -- Если игра не в главном меню, удерживаем свободное вращение и зум
-                if LocalPlayer.Character then
-                    cam.CameraType = Enum.CameraType.Custom
-                end
+            if cam and cam.CameraType == Enum.CameraType.Scriptable and LocalPlayer.Character then
+                cam.CameraType = Enum.CameraType.Custom
             end
         elseif wasUnlockCam then
             wasUnlockCam = false
@@ -174,7 +170,6 @@ function Visuals.Init()
             end)
         end
 
-        -- 2. Night Vision
         if State.NightVision then
             wasNightVision = true
             Lighting.Ambient = Color3.fromRGB(230, 230, 230)
@@ -191,7 +186,6 @@ function Visuals.Init()
             Visuals.RestoreLighting()
         end
 
-        -- 3. No Blur & No Sleep Screen
         if State.NoBlur or State.NoSleepScreen then
             ProcessPostEffects(Lighting)
             if Workspace.CurrentCamera then
@@ -368,19 +362,20 @@ function SaveDino.Init()
     end))
 end
 
--- 6. Combat & Proportional Shape Reach
+-- 6. Combat & Исправленный пропорциональный Reach
 local Combat = {}
 local ZP = PhysicalProperties.new(0.0001, 0, 0, 0, 0)
-local myCachedChar = nil
-local myCharParts = nil
 
-local function matchCat(n, fullTail)
-    local l = string.lower(n)
+local function matchCat(part, fullTail)
+    local nameStr = string.lower(part.Name)
+    local parentStr = (part.Parent and part.Parent ~= Workspace) and string.lower(part.Parent.Name) or ""
+    local combined = nameStr .. " " .. parentStr
+
     for _, c in ipairs({ "Jaw", "Head", "Tail", "Leg", "Body" }) do
         for _, p in ipairs(PartPatterns[c]) do
-            if string.find(l, p, 1, true) then
+            if string.find(combined, p, 1, true) then
                 if c == "Tail" and not fullTail then
-                    if string.find(l, "tip", 1, true) or string.match(l, "tail[_%s]*[3-9]") then return nil end
+                    if string.find(nameStr, "tip", 1, true) or string.match(nameStr, "tail[_%s]*[3-9]") then return nil end
                 end
                 return c
             end
@@ -388,20 +383,23 @@ local function matchCat(n, fullTail)
     end
     return nil
 end
+
 local function isLocal(m) return LocalPlayer.Character and (m == LocalPlayer.Character or m:IsDescendantOf(LocalPlayer.Character)) end
+
 local function isCritRoot(model, part)
     if not part or not model then return true end
     local l = string.lower(part.Name)
     if l == "humanoidrootpart" or l == "rootpart" or l == "root" or l == "primary" or model.PrimaryPart == part then return true end
-    local ok, ar = pcall(function() return part.AssemblyRootPart end)
-    return ok and ar == part
+    return false
 end
+
 local function findPart(model, cat)
     local c = State.CachedModels[model]
     if c and c[cat] then for _, p in ipairs(c[cat]) do if p and p.Parent then return p end end end
-    for _, d in ipairs(model:GetDescendants()) do if d:IsA("BasePart") and matchCat(d.Name, false) == cat then return d end end
+    for _, d in ipairs(model:GetDescendants()) do if d:IsA("BasePart") and matchCat(d, false) == cat then return d end end
     return nil
 end
+
 local function getEnemy(part)
     if not part or not part:IsA("BasePart") or isLocal(part) then return nil end
     local cur = part.Parent
@@ -413,14 +411,24 @@ local function getEnemy(part)
     end
     return nil
 end
+
 function Combat.ScanModel(model, isSelf)
     local cats = { Head = {}, Jaw = {}, Body = {}, Tail = {}, Leg = {} }
     pcall(function()
         for _, d in ipairs(model:GetDescendants()) do
             if d:IsA("BasePart") and not isCritRoot(model, d) then
-                local c = matchCat(d.Name, isSelf)
-                if c and cats[c] then table.insert(cats[c], d) end
+                local c = matchCat(d, isSelf)
+                if c and cats[c] then
+                    table.insert(cats[c], d)
+                elseif isSelf and d:FindFirstChildOfClass("TouchTransmitter") then
+                    -- Если на детали висит TouchInterest (хитбокс атаки), добавляем в Jaw
+                    table.insert(cats.Jaw, d)
+                end
             end
+        end
+        -- Если у динозавра нет отдельной детали Jaw, дублируем Head в Jaw, чтобы выбор Челюсти всегда работал
+        if isSelf and #cats.Jaw == 0 and #cats.Head > 0 then
+            for _, hp in ipairs(cats.Head) do table.insert(cats.Jaw, hp) end
         end
         if #cats.Body == 0 then
             for _, d in ipairs(model:GetDescendants()) do
@@ -432,6 +440,20 @@ function Combat.ScanModel(model, isSelf)
         end
     end)
     return cats
+end
+
+-- Вычисляет новый размер с сохранением 100% оригинальных пропорций детали (не превращая в куб!)
+local function GetProportionalSize(origSize, targetRange)
+    if targetRange < 0 then
+        return origSize * math.abs(targetRange)
+    end
+    local maxAxis = math.max(origSize.X, origSize.Y, origSize.Z, 0.5)
+    local ratio = Vector3.new(
+        math.max(origSize.X / maxAxis, 0.35),
+        math.max(origSize.Y / maxAxis, 0.35),
+        math.max(origSize.Z / maxAxis, 0.35)
+    )
+    return ratio * targetRange
 end
 
 local function IsCleanBridgePacket(arg1)
@@ -501,11 +523,6 @@ function Combat.Init()
                     if p ~= LocalPlayer and p.Character then nc[p.Character] = Combat.ScanModel(p.Character, false) end
                 end
                 State.CachedModels = nc
-                local myChar = LocalPlayer.Character
-                if myChar and (myChar ~= myCachedChar or not myCharParts) then
-                    myCachedChar = myChar
-                    myCharParts = Combat.ScanModel(myChar, true)
-                end
             end)
             task.wait(1.2)
         end
@@ -514,7 +531,7 @@ function Combat.Init()
     task.spawn(function()
         while State.Active do
             pcall(function()
-                -- 1. Enemy Hitboxes
+                -- 1. Enemy Hitboxes (с сохранением формы части тела врага)
                 for model, groups in pairs(State.CachedModels) do
                     if model and model.Parent and not isLocal(model) then
                         local tCat = State.SelectedHitboxPart; local tSize = HitboxSizes[State.HitboxSizeLevel]
@@ -527,7 +544,8 @@ function Combat.Init()
                                     local o = State.OriginalParts[part]
                                     if State.HitboxMaster and cat == tCat and idx <= 2 then
                                         part.Massless = true; part.CanCollide = false; part.CustomPhysicalProperties = ZP; part.RootPriority = -127
-                                        part.Size = Vector3.new(tSize, tSize, tSize); part.Transparency = State.HitboxTransparency; part.CanTouch = true; part.CanQuery = true
+                                        part.Size = GetProportionalSize(o.Size, tSize)
+                                        part.Transparency = State.HitboxTransparency; part.CanTouch = true; part.CanQuery = true
                                     else
                                         part.Size = o.Size; part.Transparency = o.Transparency; part.CanCollide = o.CanCollide; part.Massless = o.Massless; part.CanTouch = o.CanTouch; part.CanQuery = o.CanQuery; part.CustomPhysicalProperties = o.CustomPhysicalProperties; part.RootPriority = o.RootPriority
                                     end
@@ -537,32 +555,32 @@ function Combat.Init()
                     end
                 end
 
-                -- 2. Пропорциональный Local Reach (повторяет форму челюсти, головы, хвоста и лап)
+                -- 2. Динамический пропорциональный Local Reach (сохраняет форму челюсти/головы/хвоста/ног + дает реальную дистанцию)
                 local myChar = LocalPlayer.Character
-                if myChar and myChar.Parent and myCharParts then
-                    local mult = ReachMultipliers[State.ReachScaleLevel] or 2.0
-                    for cat, parts in pairs(myCharParts) do
+                if myChar and myChar.Parent then
+                    local myGroups = Combat.ScanModel(myChar, true)
+                    local targetRange = ReachRanges[State.ReachScaleLevel] or 20
+                    local appliedThisTick = {}
+
+                    for cat, parts in pairs(myGroups) do
                         local isSel = State.ReachParts[cat] == true
                         for _, part in ipairs(parts) do
                             if part and part.Parent and not isCritRoot(myChar, part) then
                                 if not State.LocalOriginalParts[part] then
-                                    local mesh = part:FindFirstChildOfClass("SpecialMesh")
                                     State.LocalOriginalParts[part] = {
                                         Size = part.Size, Transparency = part.Transparency, CanCollide = part.CanCollide,
                                         CanQuery = part.CanQuery, CanTouch = part.CanTouch, Massless = part.Massless,
-                                        CustomPhysicalProperties = part.CustomPhysicalProperties, RootPriority = part.RootPriority,
-                                        Mesh = mesh, MeshScale = mesh and mesh.Scale or nil
+                                        CustomPhysicalProperties = part.CustomPhysicalProperties, RootPriority = part.RootPriority
                                     }
                                 end
                                 local orig = State.LocalOriginalParts[part]
                                 if State.ReachEnabled and isSel then
+                                    appliedThisTick[part] = true
                                     part.Massless = true; part.CanCollide = false; part.CustomPhysicalProperties = ZP; part.RootPriority = -127
-                                    part.Size = orig.Size * mult
-                                    if orig.Mesh and orig.MeshScale then orig.Mesh.Scale = orig.MeshScale * mult end
+                                    part.Size = GetProportionalSize(orig.Size, targetRange)
                                     part.Transparency = State.ReachTransparency; part.CanTouch = true; part.CanQuery = true
-                                else
+                                elseif not appliedThisTick[part] then
                                     part.Size = orig.Size; part.Transparency = orig.Transparency
-                                    if orig.Mesh and orig.MeshScale then orig.Mesh.Scale = orig.MeshScale end
                                     if State.SaveDinoPhase == "idle" then part.CanCollide = orig.CanCollide end
                                     part.Massless = orig.Massless; part.CanTouch = orig.CanTouch; part.CanQuery = orig.CanQuery
                                     part.CustomPhysicalProperties = orig.CustomPhysicalProperties; part.RootPriority = orig.RootPriority
@@ -608,16 +626,13 @@ function Combat.RestoreAll()
     end
     for p, o in pairs(State.LocalOriginalParts) do
         pcall(function()
-            if p and p.Parent then
-                p.Size = o.Size; p.Transparency = o.Transparency; p.CanCollide = o.CanCollide; p.CanQuery = o.CanQuery; p.CanTouch = o.CanTouch; p.Massless = o.Massless; p.CustomPhysicalProperties = o.CustomPhysicalProperties; p.RootPriority = o.RootPriority
-                if o.Mesh and o.MeshScale then o.Mesh.Scale = o.MeshScale end
-            end
+            if p and p.Parent then p.Size = o.Size; p.Transparency = o.Transparency; p.CanCollide = o.CanCollide; p.CanQuery = o.CanQuery; p.CanTouch = o.CanTouch; p.Massless = o.Massless; p.CustomPhysicalProperties = o.CustomPhysicalProperties; p.RootPriority = o.RootPriority end
         end)
     end
     table.clear(State.OriginalParts); table.clear(State.LocalOriginalParts)
 end
 
--- 7. ESP
+-- 7. ESP (С отображением названия Динозавра над ником игрока)
 local ESPModule = {}
 local espGuis, worldGuis, trackedWorld, stamTrack = {}, {}, {}, {}
 local worldScanDone, worldScanning = false, false
@@ -638,6 +653,68 @@ local function ExtractNumber(v)
     if type(v) == "number" then return v end
     if type(v) == "string" then return tonumber(v) or tonumber(string.match(v, "[-]?%d+%.?%d*")) end
     return nil
+end
+
+-- Определяет название динозавра, за которого играет игрок
+local SpeciesAttrKeys = { "dinosaur", "species", "dino", "creature", "animal", "character", "class", "SelectedDinosaur", "CurrentDino" }
+local function GetDinoSpeciesName(player, model)
+    if not model then return "Unknown" end
+
+    -- 1. Проверяем атрибуты на Игроке и Модели
+    for _, inst in ipairs({ player, model, model:FindFirstChildOfClass("Humanoid") }) do
+        if inst then
+            local ok, attrs = pcall(function() return inst:GetAttributes() end)
+            if ok and type(attrs) == "table" then
+                for k, v in pairs(attrs) do
+                    if type(v) == "string" and #v > 2 and v ~= player.Name and v ~= player.DisplayName then
+                        local kn = string.lower(k)
+                        for _, sk in ipairs(SpeciesAttrKeys) do
+                            if string.find(kn, string.lower(sk), 1, true) then
+                                return v
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- 2. Проверяем StringValue / ObjectValue внутри игрока и персонажа
+    for _, container in ipairs({ model, player, player:FindFirstChild("Data"), player:FindFirstChild("Stats"), player:FindFirstChild("PlayerData") }) do
+        if container then
+            for _, obj in ipairs(container:GetChildren()) do
+                if obj:IsA("StringValue") and #obj.Value > 2 and obj.Value ~= player.Name then
+                    local vn = string.lower(obj.Name)
+                    for _, sk in ipairs(SpeciesAttrKeys) do
+                        if string.find(vn, string.lower(sk), 1, true) then
+                            return obj.Value
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- 3. Проверяем дочерние под-модели или нестандартное имя самой модели
+    if model.Name ~= player.Name and model.Name ~= player.DisplayName and #model.Name > 2 then
+        local clean = string.gsub(model.Name, player.Name, "")
+        clean = string.gsub(clean, "^[%s_%-]+", ""):gsub("[%s_%-]+$", "")
+        if #clean > 2 then return clean end
+        return model.Name
+    end
+
+    for _, ch in ipairs(model:GetChildren()) do
+        if ch:IsA("Model") and ch.Name ~= "Hitboxes" and ch.Name ~= "Parts" and ch.Name ~= player.Name and #ch.Name > 2 then
+            return ch.Name
+        end
+    end
+
+    local hum = model:FindFirstChildOfClass("Humanoid")
+    if hum and hum.DisplayName ~= "" and hum.DisplayName ~= player.Name and hum.DisplayName ~= player.DisplayName then
+        return hum.DisplayName
+    end
+
+    return "Dino"
 end
 
 local function GetDinoStats(player, model, headPart)
@@ -807,20 +884,56 @@ function ESPModule.Init()
                                 local dist = (myPos - targetPart.Position).Magnitude
                                 if dist <= State.ESPMaxDistance then
                                     if not espGuis[player] or not espGuis[player].gui or not espGuis[player].gui.Parent then
-                                        local billboard = Instance.new("BillboardGui"); billboard.Name = "PE_ESP_" .. player.Name; billboard.Size = UDim2.fromOffset(175, 52); billboard.StudsOffset = Vector3.new(0, 5, 0); billboard.AlwaysOnTop = true; billboard.ResetOnSpawn = false; billboard.Enabled = false; billboard.Parent = ESPFolder
-                                        local nameLabel = Instance.new("TextLabel"); nameLabel.Size = UDim2.new(1, 0, 0, 15); nameLabel.BackgroundTransparency = 1; nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255); nameLabel.TextStrokeTransparency = 0.1; nameLabel.Font = Enum.Font.GothamBold; nameLabel.TextSize = 12; nameLabel.Parent = billboard
-                                        local hpBarBg = Instance.new("Frame"); hpBarBg.Size = UDim2.new(1, 0, 0, 14); hpBarBg.Position = UDim2.new(0, 0, 0, 17); hpBarBg.BackgroundColor3 = Color3.fromRGB(24, 24, 28); hpBarBg.BorderSizePixel = 0; hpBarBg.Parent = billboard; Utils.Style(hpBarBg, 4, Color3.fromRGB(0, 0, 0), 1)
+                                        local billboard = Instance.new("BillboardGui"); billboard.Name = "PE_ESP_" .. player.Name
+                                        billboard.Size = UDim2.fromOffset(180, 68)
+                                        billboard.StudsOffset = Vector3.new(0, 5.5, 0)
+                                        billboard.AlwaysOnTop = true; billboard.ResetOnSpawn = false; billboard.Enabled = false; billboard.Parent = ESPFolder
+
+                                        -- Верхняя строчка: Название динозавра (например, Torvosaurus)
+                                        local speciesLabel = Instance.new("TextLabel")
+                                        speciesLabel.Size = UDim2.new(1, 0, 0, 15)
+                                        speciesLabel.Position = UDim2.new(0, 0, 0, 0)
+                                        speciesLabel.BackgroundTransparency = 1
+                                        speciesLabel.TextColor3 = Color3.fromRGB(255, 215, 90)
+                                        speciesLabel.TextStrokeTransparency = 0.05
+                                        speciesLabel.Font = Enum.Font.GothamBold
+                                        speciesLabel.TextSize = 12
+                                        speciesLabel.Parent = billboard
+
+                                        -- Вторая строчка: Дистанция + Ник игрока
+                                        local nameLabel = Instance.new("TextLabel")
+                                        nameLabel.Size = UDim2.new(1, 0, 0, 15)
+                                        nameLabel.Position = UDim2.new(0, 0, 0, 15)
+                                        nameLabel.BackgroundTransparency = 1
+                                        nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+                                        nameLabel.TextStrokeTransparency = 0.1
+                                        nameLabel.Font = Enum.Font.GothamBold
+                                        nameLabel.TextSize = 11
+                                        nameLabel.Parent = billboard
+
+                                        local hpBarBg = Instance.new("Frame"); hpBarBg.Size = UDim2.new(1, 0, 0, 14); hpBarBg.Position = UDim2.new(0, 0, 0, 32); hpBarBg.BackgroundColor3 = Color3.fromRGB(24, 24, 28); hpBarBg.BorderSizePixel = 0; hpBarBg.Parent = billboard; Utils.Style(hpBarBg, 4, Color3.fromRGB(0, 0, 0), 1)
                                         local hpBarFill = Instance.new("Frame"); hpBarFill.Size = UDim2.new(1, 0, 1, 0); hpBarFill.BackgroundColor3 = Color3.fromRGB(65, 235, 85); hpBarFill.BorderSizePixel = 0; hpBarFill.Parent = hpBarBg; Utils.Style(hpBarFill, 4, nil)
                                         local hpText = Instance.new("TextLabel"); hpText.Size = UDim2.fromScale(1, 1); hpText.BackgroundTransparency = 1; hpText.TextColor3 = Color3.fromRGB(255, 255, 255); hpText.TextStrokeTransparency = 0.05; hpText.Font = Enum.Font.GothamBold; hpText.TextSize = 10; hpText.ZIndex = 3; hpText.Parent = hpBarBg
-                                        local stamBarBg = Instance.new("Frame"); stamBarBg.Size = UDim2.new(1, 0, 0, 14); stamBarBg.Position = UDim2.new(0, 0, 0, 34); stamBarBg.BackgroundColor3 = Color3.fromRGB(24, 24, 28); stamBarBg.BorderSizePixel = 0; stamBarBg.Parent = billboard; Utils.Style(stamBarBg, 4, Color3.fromRGB(0, 0, 0), 1)
+
+                                        local stamBarBg = Instance.new("Frame"); stamBarBg.Size = UDim2.new(1, 0, 0, 14); stamBarBg.Position = UDim2.new(0, 0, 0, 49); stamBarBg.BackgroundColor3 = Color3.fromRGB(24, 24, 28); stamBarBg.BorderSizePixel = 0; stamBarBg.Parent = billboard; Utils.Style(stamBarBg, 4, Color3.fromRGB(0, 0, 0), 1)
                                         local stamBarFill = Instance.new("Frame"); stamBarFill.Size = UDim2.new(1, 0, 1, 0); stamBarFill.BackgroundColor3 = Color3.fromRGB(55, 170, 255); stamBarFill.BorderSizePixel = 0; stamBarFill.Parent = stamBarBg; Utils.Style(stamBarFill, 4, nil)
                                         local stamText = Instance.new("TextLabel"); stamText.Size = UDim2.fromScale(1, 1); stamText.BackgroundTransparency = 1; stamText.TextColor3 = Color3.fromRGB(255, 255, 255); stamText.TextStrokeTransparency = 0.05; stamText.Font = Enum.Font.GothamBold; stamText.TextSize = 10; stamText.ZIndex = 3; stamText.Parent = stamBarBg
-                                        espGuis[player] = { gui = billboard, name = nameLabel, hpBg = hpBarBg, hpFill = hpBarFill, hpText = hpText, stamBg = stamBarBg, stamFill = stamBarFill, stamText = stamText }
+
+                                        espGuis[player] = {
+                                            gui = billboard, species = speciesLabel, name = nameLabel,
+                                            hpBg = hpBarBg, hpFill = hpBarFill, hpText = hpText,
+                                            stamBg = stamBarBg, stamFill = stamBarFill, stamText = stamText
+                                        }
                                     end
                                     local data = espGuis[player]; data.gui.Adornee = targetPart
                                     local hp, maxHp, stam, maxStam = GetDinoStats(player, char, targetPart)
+                                    local dinoName = GetDinoSpeciesName(player, char)
                                     local hpRatio = math.clamp(hp / maxHp, 0, 1); local stamRatio = math.clamp(stam / maxStam, 0, 1)
+
+                                    data.species.Visible = State.ESP_Species
+                                    data.species.Text = "🦖 " .. tostring(dinoName)
                                     data.name.Text = string.format("[%dm] %s", math.floor(dist), player.DisplayName or player.Name)
+
                                     data.hpBg.Visible = State.ESP_Health
                                     if State.ESP_Health then
                                         data.hpFill.Size = UDim2.new(hpRatio, 0, 1, 0); data.hpText.Text = string.format("HP: %d / %d", math.floor(hp + 0.5), math.floor(maxHp + 0.5))
@@ -908,9 +1021,9 @@ end
 
 local CombatPage = CreateTab("Combat"); local RenderPage = CreateTab("Render"); local ToolsPage = CreateTab("Tools")
 
--- Вкладка Combat: Пропорциональный Reach + Настройка прозрачности + Silent Aim + Enemy Hitbox
-CreateToggle(CombatPage, "Reach (Точная форма частей тела)", State.ReachEnabled, 1, function(v) State.ReachEnabled = v end)
-CreateCycleButton(CombatPage, "Масштаб формы Reach", ReachLabels, State.ReachScaleLevel, 2, function(_, idx) State.ReachScaleLevel = idx end)
+-- Вкладка Combat
+CreateToggle(CombatPage, "Reach (Дальность + Форма частей тела)", State.ReachEnabled, 1, function(v) State.ReachEnabled = v end)
+CreateCycleButton(CombatPage, "Дистанция / Форма Reach", ReachLabels, State.ReachScaleLevel, 2, function(_, idx) State.ReachScaleLevel = idx end)
 CreateCycleButton(CombatPage, "Прозрачность Reach", TransLabels, State.ReachTransLevel, 3, function(_, idx)
     State.ReachTransLevel = idx
     State.ReachTransparency = TransValues[idx] or 0.75
@@ -932,17 +1045,18 @@ CreateCycleButton(CombatPage, "Прозрачность Хитбокса Вра�
 end)
 CreateToggle(CombatPage, "No Attack CD", State.NoAttackCD, 15, function(v) State.NoAttackCD = v end)
 
--- Вкладка Render: ESP + Unlock Camera + Зрение
+-- Вкладка Render
 CreateToggle(RenderPage, "Unlock Camera (Отдаление без лимита)", State.UnlockCamera, 1, function(v) State.UnlockCamera = v end)
-CreateToggle(RenderPage, "ESP Игроков (Цифры в полосках)", State.ESPEnabled, 2, function(v) State.ESPEnabled = v end)
-CreateToggle(RenderPage, "Показывать Полоску HP", State.ESP_Health, 3, function(v) State.ESP_Health = v end)
-CreateToggle(RenderPage, "Показывать Полоску Стамины", State.ESP_Stamina, 4, function(v) State.ESP_Stamina = v end)
-CreateCycleButton(RenderPage, "Дистанция ESP Игроков", { 1000, 2000, 3500, 5000 }, 2, 5, function(val) State.ESPMaxDistance = val end)
-CreateToggle(RenderPage, "ESP Костей", State.ESPBones, 6, function(v) State.ESPBones = v; if v then ESPModule.ScanWorldItems() end end)
-CreateToggle(RenderPage, "ESP Еды / Трупов", State.ESPCorpses, 7, function(v) State.ESPCorpses = v; if v then ESPModule.ScanWorldItems() end end)
-CreateToggle(RenderPage, "Night Vision (Без тумана)", State.NightVision, 8, function(v) State.NightVision = v end)
-CreateToggle(RenderPage, "No Blur (Убрать размытие)", State.NoBlur, 9, function(v) State.NoBlur = v end)
-CreateToggle(RenderPage, "No Sleep Screen (Убрать темный экран)", State.NoSleepScreen, 10, function(v) State.NoSleepScreen = v end)
+CreateToggle(RenderPage, "ESP Игроков (Ник + Динозавр + Полоски)", State.ESPEnabled, 2, function(v) State.ESPEnabled = v end)
+CreateToggle(RenderPage, "Показывать Название Динозавра", State.ESP_Species, 3, function(v) State.ESP_Species = v end)
+CreateToggle(RenderPage, "Показывать Полоску HP", State.ESP_Health, 4, function(v) State.ESP_Health = v end)
+CreateToggle(RenderPage, "Показывать Полоску Стамины", State.ESP_Stamina, 5, function(v) State.ESP_Stamina = v end)
+CreateCycleButton(RenderPage, "Дистанция ESP Игроков", { 1000, 2000, 3500, 5000 }, 2, 6, function(val) State.ESPMaxDistance = val end)
+CreateToggle(RenderPage, "ESP Костей", State.ESPBones, 7, function(v) State.ESPBones = v; if v then ESPModule.ScanWorldItems() end end)
+CreateToggle(RenderPage, "ESP Еды / Трупов", State.ESPCorpses, 8, function(v) State.ESPCorpses = v; if v then ESPModule.ScanWorldItems() end end)
+CreateToggle(RenderPage, "Night Vision (Без тумана)", State.NightVision, 9, function(v) State.NightVision = v end)
+CreateToggle(RenderPage, "No Blur (Убрать размытие)", State.NoBlur, 10, function(v) State.NoBlur = v end)
+CreateToggle(RenderPage, "No Sleep Screen (Убрать темный экран)", State.NoSleepScreen, 11, function(v) State.NoSleepScreen = v end)
 
 -- Вкладка Tools
 CreateToggle(ToolsPage, "Auto Clean (Вшитый пакет мытья)", State.AutoClean, 1, function(v)
