@@ -1,7 +1,7 @@
 -- ═══════════════════════════════════════════════════════════════════════
--- PRIOR EXTINCTION // SCRIPT 2 (Prior Aim + Real HP/Stamina ESP)
+-- BLACKHAWK RESCUE MISSION 5 // ULTIMATE (Aimbot + ESP + Hitbox)
 -- ═══════════════════════════════════════════════════════════════════════
-print("[PE 2] Запуск скрипта для Prior Extinction...")
+print("[BRM5] Запуск скрипта...")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -10,17 +10,23 @@ local CoreGui = game:GetService("CoreGui")
 local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 local LocalPlayer = Players.LocalPlayer
+local Camera = Workspace.CurrentCamera
 
 local Env = (type(getgenv) == "function" and getgenv()) or _G
-if Env.PriorUI2_Cleanup then pcall(Env.PriorUI2_Cleanup) end
+if Env.BRM5_Cleanup then pcall(Env.BRM5_Cleanup) end
 
 -- 1. Настройки
 local State = {
     Active = true, Minimized = false, Connections = {},
-    SilentAim = false, AimPart = "Head",
-    ESPEnabled = false, ESPHealth = true, ESPStamina = true, ESPDistance = 2000
+    -- Aimbot
+    AimbotEnabled = false, AimPart = "Head", FOV = 250, Smoothness = 0.25,
+    -- Hitbox
+    HitboxEnabled = false, HitboxSize = 15,
+    -- ESP
+    ESPEnabled = false, ESPHealth = true, ESPDistance = 2000,
+    ESPOutline = true, ESPRadius = true
 }
-Env.PriorUI2_State = State
+Env.BRM5_State = State
 
 local Theme = {
     Background = Color3.fromRGB(12, 12, 14), Surface = Color3.fromRGB(18, 18, 22),
@@ -30,13 +36,12 @@ local Theme = {
     DangerStroke = Color3.fromRGB(95, 40, 45)
 }
 
--- Паттерны частей тела для динозавров Prior Extinction
+-- Паттерны для обычных персонажей (R6/R15)
 local PartPatterns = {
-    Jaw = { "jaw", "mandible", "snout", "mouth", "bite", "muzzle", "beak", "fang", "teeth", "attack" },
-    Head = { "head", "skull", "cranium", "neckhead", "horn", "crest" },
-    Body = { "chest", "ribcage", "abdomen", "bodyhitbox", "hitboxbody", "upperbody", "spine", "torso", "body", "pelvis", "hip" },
-    Tail = { "tail1", "tail_1", "tailbase", "tailstart", "tail" },
-    Leg = { "leg", "thigh", "calf", "shin", "foot", "ankle", "claw", "arm", "hand" }
+    Head = { "head" },
+    Body = { "torso", "upper torso", "lower torso", "humanoidrootpart" },
+    Arms = { "arm", "left arm", "right arm" },
+    Legs = { "leg", "left leg", "right leg" }
 }
 
 -- 2. Утилиты
@@ -50,9 +55,7 @@ function Utils.GuiParent()
 end
 function Utils.Style(i, r, sc, sw)
     local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, r or 8); c.Parent = i
-    if sc then
-        local s = Instance.new("UIStroke"); s.Color = sc; s.Thickness = sw or 1; s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border; s.Parent = i
-    end
+    if sc then local s = Instance.new("UIStroke"); s.Color = sc; s.Thickness = sw or 1; s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border; s.Parent = i end
 end
 function Utils.Drag(tr, tf, cb)
     local d, di, ds, sp, md = false, nil, nil, nil, 0
@@ -60,285 +63,203 @@ function Utils.Drag(tr, tf, cb)
         if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then
             d = true; ds = inp.Position; sp = tf.Position; md = 0
             local rc; rc = inp.Changed:Connect(function()
-                if inp.UserInputState == Enum.UserInputState.End then
-                    d = false; if rc then rc:Disconnect() end
-                    if md < 12 and cb then cb() end
-                end
+                if inp.UserInputState == Enum.UserInputState.End then d = false; if rc then rc:Disconnect() end; if md < 12 and cb then cb() end end
             end)
         end
     end))
     Utils.Track(tr.InputChanged:Connect(function(inp) if inp.UserInputType == Enum.UserInputType.MouseMovement or inp.UserInputType == Enum.UserInputType.Touch then di = inp end end))
     Utils.Track(UserInputService.InputChanged:Connect(function(inp)
-        if inp == di and d and ds and sp then
-            local dl = inp.Position - ds; md = dl.Magnitude
-            tf.Position = UDim2.new(sp.X.Scale, sp.X.Offset + dl.X, sp.Y.Scale, sp.Y.Offset + dl.Y)
-        end
+        if inp == di and d and ds and sp then local dl = inp.Position - ds; md = dl.Magnitude; tf.Position = UDim2.new(sp.X.Scale, sp.X.Offset + dl.X, sp.Y.Scale, sp.Y.Offset + dl.Y) end
     end))
 end
 
--- 3. Специфичные для Prior функции (получение HP, стамины, вида динозавра)
-local function ExtractNumber(v)
-    if type(v) == "number" then return v end
-    if type(v) == "string" then return tonumber(v) or tonumber(string.match(v, "[-]?%d+%.?%d*")) end
-    return nil
-end
-
-local function GetPriorStats(player, model)
-    local hp, maxHp = 100, 100
-    local stam, maxStam = 100, 100
-    
-    -- 1. Проверяем Humanoid (базовое HP)
-    local hum = model:FindFirstChildOfClass("Humanoid")
-    if hum then hp = hum.Health; maxHp = hum.MaxHealth end
-    
-    -- 2. Проверяем атрибуты модели, игрока и Humanoid (Prior хранит данные тут)
-    local function CheckKV(rawName, rawVal)
-        local num = ExtractNumber(rawVal); if not num then return end
-        local n = string.lower(tostring(rawName))
-        if n == "health" or n == "hp" or n == "currenthealth" then hp = num
-        elseif n == "maxhealth" or n == "maxhp" then if num > 0 then maxHp = num end
-        elseif string.find(n, "maxstam", 1, true) then if num > 0 then maxStam = num end
-        elseif string.find(n, "stam", 1, true) or n == "energy" then stam = num end
-    end
-    
-    for _, inst in ipairs({ model, hum, player }) do
-        if inst then
-            local ok, attrs = pcall(function() return inst:GetAttributes() end)
-            if ok and type(attrs) == "table" then for k, v in pairs(attrs) do CheckKV(k, v) end end
-        end
-    end
-    
-    -- 3. Проверяем дочерние ValueBase (StringValue, NumberValue и т.д.)
-    for _, obj in ipairs(model:GetDescendants()) do
-        if obj:IsA("ValueBase") then pcall(function() CheckKV(obj.Name, obj.Value) end) end
-    end
-    
-    if maxHp <= 0 then maxHp = math.max(hp, 100) end
-    if maxStam <= 0 then maxStam = math.max(stam, 100) end
-    
-    return hp, maxHp, stam, maxStam
-end
-
--- Поиск названия динозавра (для красивого ESP)
-local InvalidSpecies = {["rig"]=true,["model"]=true,["default"]=true,["male"]=true,["female"]=true,["adult"]=true,["juvenile"]=true,["baby"]=true,["character"]=true,["humanoid"]=true,["hitbox"]=true,["parts"]=true}
-local SpeciesKeys = {"dinosaur", "species", "dinoname", "currentdino", "creature", "playable", "dino"}
-
-local function GetDinoSpecies(player, model)
-    local found = nil
-    local function CheckString(raw)
-        if type(raw) ~= "string" then return end
-        local s = raw:gsub("%s+", "")
-        if #s < 3 or #s > 25 then return end
-        if s == player.Name or s == player.DisplayName then return end
-        if InvalidSpecies[string.lower(s)] then return end
-        found = s
-    end
-    
-    for _, inst in ipairs({ model, player }) do
-        local ok, attrs = pcall(function() return inst:GetAttributes() end)
-        if ok and type(attrs) == "table" and not found then
-            for _, targetKey in ipairs(SpeciesKeys) do
-                for k, v in pairs(attrs) do
-                    if string.lower(k) == targetKey and not found then CheckString(v) end
-                end
-            end
-        end
-    end
-    if not found then CheckString(model.Name) end
-    return found
-end
-
--- 4. Aim (Наведение на части динозавра)
+-- 3. Основные функции (Поиск частей, Проверка стен)
 local function FindPartByCat(model, cat)
     for _, d in ipairs(model:GetDescendants()) do
         if d:IsA("BasePart") then
             local n = string.lower(d.Name)
-            for _, pat in ipairs(PartPatterns[cat]) do
-                if string.find(n, pat, 1, true) then return d end
-            end
+            for _, pat in ipairs(PartPatterns[cat]) do if string.find(n, pat, 1, true) then return d end end
         end
     end
     return nil
 end
 
-local function GetEnemy(part)
-    if not part or not part:IsA("BasePart") then return nil end
-    local char = LocalPlayer.Character
-    if char and (part == char or part:IsDescendantOf(char)) then return nil end
-    local cur = part.Parent
-    while cur and cur ~= Workspace do
-        if cur:IsA("Model") and (cur:FindFirstChildOfClass("Humanoid") or cur:FindFirstChild("Head", true)) then
-            return cur
-        end
-        cur = cur.Parent
-    end
-    return nil
+local function HasLineOfSight(targetPart)
+    if not targetPart then return false end
+    local origin = Camera.CFrame.Position
+    local direction = targetPart.Position - origin
+    
+    local raycastParams = RaycastParams.new()
+    -- Игнорируем себя и саму цель
+    raycastParams.FilterDescendantsInstances = { LocalPlayer.Character, Camera, targetPart.Parent }
+    raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+    
+    local result = Workspace:Raycast(origin, direction, raycastParams)
+    return result == nil or result.Instance:IsDescendantOf(targetPart.Parent)
 end
 
-if not Env.PriorUI2_Hook then
-    pcall(function()
-        local oldNamecall
-        oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
-            local cs = Env.PriorUI2_State
-            if cs and cs.Active and cs.SilentAim then
-                local method = getnamecallmethod()
-                if method == "FireServer" or method == "InvokeServer" then
-                    local args = { ... }
-                    local modified = false
-                    for i, arg in ipairs(args) do
-                        if typeof(arg) == "Instance" and arg:IsA("BasePart") then
-                            local enemy = GetEnemy(arg)
-                            if enemy then
-                                local targetPart = FindPartByCat(enemy, cs.AimPart)
-                                if targetPart then args[i] = targetPart; modified = true end
-                            end
-                        end
+-- 4. Aimbot и Hitbox
+local CachedOriginalHitboxes = {}
+
+local function UpdateAimbot()
+    if not State.AimbotEnabled or not LocalPlayer.Character then return end
+    
+    local closestTarget = nil
+    local shortestDistance = State.FOV
+    
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local targetPart = FindPartByCat(player.Character, State.AimPart)
+            if targetPart and HasLineOfSight(targetPart) then
+                local screenPos, onScreen = Camera:WorldToScreenPoint(targetPart.Position)
+                if onScreen then
+                    local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+                    local distanceToCenter = (Vector2.new(screenPos.X, screenPos.Y) - screenCenter).Magnitude
+                    
+                    if distanceToCenter < shortestDistance then
+                        shortestDistance = distanceToCenter
+                        closestTarget = targetPart
                     end
-                    if modified then return oldNamecall(self, table.unpack(args)) end
                 end
             end
-            return oldNamecall(self, ...)
-        end)
-        Env.PriorUI2_Hook = true
-    end)
+        end
+    end
+    
+    if closestTarget then
+        -- Плавный поворот камеры (Aimbot)
+        local targetCFrame = CFrame.new(Camera.CFrame.Position, closestTarget.Position)
+        Camera.CFrame = Camera.CFrame:Lerp(targetCFrame, State.Smoothness)
+    end
 end
 
--- 5. ESP
-local espFolder = Instance.new("Folder"); espFolder.Name = "PE2_ESP"; pcall(function() espFolder.Parent = Utils.GuiParent() end)
+local function UpdateHitboxes()
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local char = player.Character
+            for _, part in ipairs(char:GetDescendants()) do
+                if part:IsA("BasePart") and (part.Name == "Head" or part.Name == "HumanoidRootPart" or part.Name == "Torso" or part.Name == "UpperTorso") then
+                    if State.HitboxEnabled and not CachedOriginalHitboxes[part] then
+                        CachedOriginalHitboxes[part] = { Size = part.Size, Trans = part.Transparency, Collide = part.CanCollide }
+                        part.CanCollide = false
+                        part.Transparency = 0.7
+                        part.Size = Vector3.new(State.HitboxSize, State.HitboxSize, State.HitboxSize)
+                        part.Massless = true
+                    elseif not State.HitboxEnabled and CachedOriginalHitboxes[part] then
+                        local orig = CachedOriginalHitboxes[part]
+                        part.Size = orig.Size
+                        part.Transparency = orig.Trans
+                        part.CanCollide = orig.Collide
+                        CachedOriginalHitboxes[part] = nil
+                    end
+                end
+            end
+        end
+    end
+end
+
+-- 5. ESP и Радиус
+local espFolder = Instance.new("Folder"); espFolder.Name = "BRM5_ESP"; pcall(function() espFolder.Parent = Utils.GuiParent() end)
 local espGuis = {}
+local highlights = {}
+local radiusCircle = nil
+
+local function UpdateRadius()
+    if not State.ESPRadius then
+        if radiusCircle then radiusCircle.Transparency = 1 end
+        return
+    end
+    
+    if not radiusCircle then
+        radiusCircle = Instance.new("Part")
+        radiusCircle.Shape = Enum.PartType.Cylinder
+        radiusCircle.Size = Vector3.new(1, State.ESPDistance * 2, State.ESPDistance * 2)
+        radiusCircle.Anchored = true
+        radiusCircle.CanCollide = false
+        radiusCircle.Material = Enum.Material.Neon
+        radiusCircle.Color = Color3.fromRGB(50, 150, 255)
+        radiusCircle.Transparency = 0.8
+        radiusCircle.Parent = Workspace
+    end
+    
+    if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+        radiusCircle.CFrame = LocalPlayer.Character.HumanoidRootPart.CFrame * CFrame.new(0, -3, 0) * CFrame.Angles(0, 0, math.rad(90))
+        radiusCircle.Transparency = 0.8
+    end
+end
 
 local function UpdateESP()
-    local myPos = Workspace.CurrentCamera.CFrame.Position
+    local myPos = Camera.CFrame.Position
     if not State.ESPEnabled then
         for _, data in pairs(espGuis) do if data.gui then data.gui.Enabled = false end end
+        for _, hl in pairs(highlights) do hl.Enabled = false end
         return
     end
     
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= LocalPlayer and player.Character then
             local char = player.Character
-            local head = char:FindFirstChild("Head", true) or char.PrimaryPart
-            if head then
+            local head = char:FindFirstChild("Head")
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            
+            if head and hum then
                 local dist = (myPos - head.Position).Magnitude
-                if dist <= State.ESPDistance then
+                local isVisible = HasLineOfSight(head)
+                
+                if dist <= State.ESPDistance and isVisible then
                     if not espGuis[player] then
-                        local bb = Instance.new("BillboardGui")
-                        bb.Size = UDim2.fromOffset(180, 55)
-                        bb.StudsOffset = Vector3.new(0, 5, 0)
-                        bb.AlwaysOnTop = true
-                        bb.Parent = espFolder
+                        -- Создаем UI
+                        local bb = Instance.new("BillboardGui"); bb.Size = UDim2.fromOffset(160, 40); bb.StudsOffset = Vector3.new(0, 3, 0); bb.AlwaysOnTop = true; bb.Parent = espFolder
+                        local nameLbl = Instance.new("TextLabel"); nameLbl.Size = UDim2.new(1, 0, 0, 14); nameLbl.BackgroundTransparency = 1; nameLbl.TextColor3 = Color3.fromRGB(255, 255, 255); nameLbl.TextStrokeTransparency = 0.1; nameLbl.Font = Enum.Font.GothamBold; nameLbl.TextSize = 11; nameLbl.Parent = bb
+                        local hpBg = Instance.new("Frame"); hpBg.Size = UDim2.new(1, 0, 0, 12); hpBg.Position = UDim2.new(0, 0, 0, 16); hpBg.BackgroundColor3 = Color3.fromRGB(24, 24, 28); hpBg.Parent = bb; Utils.Style(hpBg, 3, Color3.fromRGB(0, 0, 0), 1)
+                        local hpFill = Instance.new("Frame"); hpFill.Size = UDim2.new(1, 0, 1, 0); hpFill.BackgroundColor3 = Color3.fromRGB(65, 235, 85); hpFill.Parent = hpBg; Utils.Style(hpFill, 3, nil)
+                        local hpText = Instance.new("TextLabel"); hpText.Size = UDim2.fromScale(1, 1); hpText.BackgroundTransparency = 1; hpText.TextColor3 = Color3.fromRGB(255, 255, 255); hpText.TextStrokeTransparency = 0.05; hpText.Font = Enum.Font.GothamBold; hpText.TextSize = 9; hpText.ZIndex = 3; hpText.Parent = hpBg
                         
-                        local speciesLbl = Instance.new("TextLabel")
-                        speciesLbl.Size = UDim2.new(1, 0, 0, 14)
-                        speciesLbl.BackgroundTransparency = 1
-                        speciesLbl.TextColor3 = Color3.fromRGB(255, 215, 90)
-                        speciesLbl.TextStrokeTransparency = 0.1
-                        speciesLbl.Font = Enum.Font.GothamBold
-                        speciesLbl.TextSize = 11
-                        speciesLbl.Parent = bb
-                        
-                        local nameLbl = Instance.new("TextLabel")
-                        nameLbl.Size = UDim2.new(1, 0, 0, 14)
-                        nameLbl.Position = UDim2.new(0, 0, 0, 14)
-                        nameLbl.BackgroundTransparency = 1
-                        nameLbl.TextColor3 = Color3.fromRGB(255, 255, 255)
-                        nameLbl.TextStrokeTransparency = 0.1
-                        nameLbl.Font = Enum.Font.GothamBold
-                        nameLbl.TextSize = 11
-                        nameLbl.Parent = bb
-                        
-                        local hpBg = Instance.new("Frame")
-                        hpBg.Size = UDim2.new(1, 0, 0, 12)
-                        hpBg.Position = UDim2.new(0, 0, 0, 30)
-                        hpBg.BackgroundColor3 = Color3.fromRGB(24, 24, 28)
-                        hpBg.Parent = bb
-                        Utils.Style(hpBg, 3, Color3.fromRGB(0, 0, 0), 1)
-                        
-                        local hpFill = Instance.new("Frame")
-                        hpFill.Size = UDim2.new(1, 0, 1, 0)
-                        hpFill.BackgroundColor3 = Color3.fromRGB(65, 235, 85)
-                        hpFill.Parent = hpBg
-                        Utils.Style(hpFill, 3, nil)
-                        
-                        local hpText = Instance.new("TextLabel")
-                        hpText.Size = UDim2.fromScale(1, 1)
-                        hpText.BackgroundTransparency = 1
-                        hpText.TextColor3 = Color3.fromRGB(255, 255, 255)
-                        hpText.TextStrokeTransparency = 0.05
-                        hpText.Font = Enum.Font.GothamBold
-                        hpText.TextSize = 9
-                        hpText.ZIndex = 3
-                        hpText.Parent = hpBg
-                        
-                        local stBg = Instance.new("Frame")
-                        stBg.Size = UDim2.new(1, 0, 0, 12)
-                        stBg.Position = UDim2.new(0, 0, 0, 43)
-                        stBg.BackgroundColor3 = Color3.fromRGB(24, 24, 28)
-                        stBg.Parent = bb
-                        Utils.Style(stBg, 3, Color3.fromRGB(0, 0, 0), 1)
-                        
-                        local stFill = Instance.new("Frame")
-                        stFill.Size = UDim2.new(1, 0, 1, 0)
-                        stFill.BackgroundColor3 = Color3.fromRGB(55, 170, 255)
-                        stFill.Parent = stBg
-                        Utils.Style(stFill, 3, nil)
-                        
-                        local stText = Instance.new("TextLabel")
-                        stText.Size = UDim2.fromScale(1, 1)
-                        stText.BackgroundTransparency = 1
-                        stText.TextColor3 = Color3.fromRGB(255, 255, 255)
-                        stText.TextStrokeTransparency = 0.05
-                        stText.Font = Enum.Font.GothamBold
-                        stText.TextSize = 9
-                        stText.ZIndex = 3
-                        stText.Parent = stBg
-                        
-                        espGuis[player] = { gui = bb, species = speciesLbl, name = nameLbl, hpBg = hpBg, hpFill = hpFill, hpText = hpText, stBg = stBg, stFill = stFill, stText = stText }
+                        espGuis[player] = { gui = bb, name = nameLbl, hpBg = hpBg, hpFill = hpFill, hpText = hpText }
+                    end
+                    
+                    -- Highlight (Обводка)
+                    if State.ESPOutline and not highlights[player] then
+                        local hl = Instance.new("Highlight")
+                        hl.DepthMode = Enum.HighlightDepthMode.Occlusion -- Не видно сквозь стены
+                        hl.FillColor = Color3.fromRGB(255, 50, 50)
+                        hl.FillTransparency = 0.5
+                        hl.OutlineColor = Color3.fromRGB(255, 50, 50)
+                        hl.Parent = char
+                        highlights[player] = hl
                     end
                     
                     local data = espGuis[player]
                     data.gui.Adornee = head
                     data.gui.Enabled = true
-                    
-                    local dino = GetDinoSpecies(player, char)
-                    data.species.Text = dino and ("[" .. dino .. "]") or "[Dinosaur]"
                     data.name.Text = string.format("[%dm] %s", math.floor(dist), player.DisplayName)
                     
-                    local hp, maxHp, stam, maxStam = GetPriorStats(player, char)
-                    local hpRatio = math.clamp(hp / maxHp, 0, 1)
-                    local stRatio = math.clamp(stam / maxStam, 0, 1)
-                    
-                    data.hpBg.Visible = State.ESPHealth
                     if State.ESPHealth then
+                        data.hpBg.Visible = true
+                        local hpRatio = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
                         data.hpFill.Size = UDim2.new(hpRatio, 0, 1, 0)
-                        data.hpText.Text = string.format("HP: %d / %d", math.floor(hp), math.floor(maxHp))
+                        data.hpText.Text = string.format("HP: %d/%d", math.floor(hum.Health), math.floor(hum.MaxHealth))
                         data.hpFill.BackgroundColor3 = (hpRatio < 0.3 and Color3.fromRGB(235, 65, 65)) or (hpRatio < 0.65 and Color3.fromRGB(240, 190, 50)) or Color3.fromRGB(60, 215, 80)
+                    else
+                        data.hpBg.Visible = false
                     end
                     
-                    data.stBg.Visible = State.ESPStamina
-                    if State.ESPStamina then
-                        data.stFill.Size = UDim2.new(stRatio, 0, 1, 0)
-                        data.stText.Text = string.format("ST: %d / %d", math.floor(stam), math.floor(maxStam))
-                        data.stFill.BackgroundColor3 = (stRatio < 0.25 and Color3.fromRGB(245, 135, 45)) or Color3.fromRGB(50, 160, 245)
-                    end
                 else
                     if espGuis[player] then espGuis[player].gui.Enabled = false end
+                    if highlights[player] then highlights[player].Enabled = false end
                 end
             end
         end
     end
 end
 
-Utils.Track(RunService.RenderStepped:Connect(UpdateESP))
-
--- 6. UI меню
-local ScreenGui = Instance.new("ScreenGui"); ScreenGui.Name = "PriorExtinction_UI2"; ScreenGui.ResetOnSpawn = false; pcall(function() ScreenGui.Parent = Utils.GuiParent() end)
-local TargetSize, IconSize = UDim2.fromOffset(450, 280), UDim2.fromOffset(50, 50)
+-- 6. Меню
+local ScreenGui = Instance.new("ScreenGui"); ScreenGui.Name = "BRM5_UI"; ScreenGui.ResetOnSpawn = false; pcall(function() ScreenGui.Parent = Utils.GuiParent() end)
+local TargetSize, IconSize = UDim2.fromOffset(450, 300), UDim2.fromOffset(50, 50)
 local MainFrame = Instance.new("Frame"); MainFrame.AnchorPoint = Vector2.new(0.5, 0.5); MainFrame.Position = UDim2.fromScale(0.5, 0.5); MainFrame.Size = UDim2.fromOffset(0, 0); MainFrame.BackgroundColor3 = Theme.Background; MainFrame.ClipsDescendants = true; MainFrame.Parent = ScreenGui; Utils.Style(MainFrame, 12, Theme.Stroke, 1.2)
 local TopBar = Instance.new("Frame"); TopBar.Size = UDim2.new(1, 0, 0, 42); TopBar.BackgroundColor3 = Theme.Surface; TopBar.Parent = MainFrame; Utils.Style(TopBar, 12, nil)
-local TitleLabel = Instance.new("TextLabel"); TitleLabel.Size = UDim2.new(1, -120, 1, 0); TitleLabel.Position = UDim2.fromOffset(15, 0); TitleLabel.BackgroundTransparency = 1; TitleLabel.Text = "PRIOR EXTINCTION // SCRIPT 2"; TitleLabel.TextColor3 = Theme.TextPrimary; TitleLabel.Font = Enum.Font.GothamBold; TitleLabel.TextSize = 13; TitleLabel.TextXAlignment = Enum.TextXAlignment.Left; TitleLabel.Parent = TopBar
+local TitleLabel = Instance.new("TextLabel"); TitleLabel.Size = UDim2.new(1, -120, 1, 0); TitleLabel.Position = UDim2.fromOffset(15, 0); TitleLabel.BackgroundTransparency = 1; TitleLabel.Text = "BLACKHAWK RM5 // ULTIMATE"; TitleLabel.TextColor3 = Theme.TextPrimary; TitleLabel.Font = Enum.Font.GothamBold; TitleLabel.TextSize = 13; TitleLabel.TextXAlignment = Enum.TextXAlignment.Left; TitleLabel.Parent = TopBar
 local MinimizeBtn = Instance.new("TextButton"); MinimizeBtn.Size = UDim2.fromOffset(32, 28); MinimizeBtn.Position = UDim2.new(1, -40, 0.5, -14); MinimizeBtn.BackgroundColor3 = Theme.Element; MinimizeBtn.Text = "—"; MinimizeBtn.TextColor3 = Theme.TextPrimary; MinimizeBtn.Font = Enum.Font.GothamBold; MinimizeBtn.TextSize = 14; MinimizeBtn.Parent = TopBar; Utils.Style(MinimizeBtn, 6, Theme.Stroke, 1)
-local MiniIcon = Instance.new("TextButton"); MiniIcon.AnchorPoint = Vector2.new(0.5, 0.5); MiniIcon.Position = UDim2.new(0.1, 0, 0.2, 0); MiniIcon.Size = UDim2.fromOffset(0, 0); MiniIcon.BackgroundColor3 = Theme.Surface; MiniIcon.Text = "PE2"; MiniIcon.TextColor3 = Theme.TextPrimary; MiniIcon.Font = Enum.Font.GothamBold; MiniIcon.TextSize = 14; MiniIcon.Visible = false; MiniIcon.Parent = ScreenGui; Utils.Style(MiniIcon, 25, Theme.Stroke, 1.5)
+local MiniIcon = Instance.new("TextButton"); MiniIcon.AnchorPoint = Vector2.new(0.5, 0.5); MiniIcon.Position = UDim2.new(0.1, 0, 0.2, 0); MiniIcon.Size = UDim2.fromOffset(0, 0); MiniIcon.BackgroundColor3 = Theme.Surface; MiniIcon.Text = "BR"; MiniIcon.TextColor3 = Theme.TextPrimary; MiniIcon.Font = Enum.Font.GothamBold; MiniIcon.TextSize = 14; MiniIcon.Visible = false; MiniIcon.Parent = ScreenGui; Utils.Style(MiniIcon, 25, Theme.Stroke, 1.5)
 local Sidebar = Instance.new("Frame"); Sidebar.Size = UDim2.new(0, 120, 1, -42); Sidebar.Position = UDim2.fromOffset(0, 42); Sidebar.BackgroundColor3 = Theme.Surface; Sidebar.Parent = MainFrame
 local TabList = Instance.new("ScrollingFrame"); TabList.Size = UDim2.new(1, -16, 1, -66); TabList.Position = UDim2.fromOffset(8, 10); TabList.BackgroundTransparency = 1; TabList.ScrollBarThickness = 0; TabList.CanvasSize = UDim2.new(0, 0, 0, 0); TabList.AutomaticCanvasSize = Enum.AutomaticSize.Y; TabList.Parent = Sidebar
 local TabListLayout = Instance.new("UIListLayout"); TabListLayout.Padding = UDim.new(0, 6); TabListLayout.Parent = TabList
@@ -369,27 +290,45 @@ end
 
 local CombatPage = CreateTab("Combat"); local RenderPage = CreateTab("Render")
 
-CreateToggle(CombatPage, "Silent Aim (Наведение)", State.SilentAim, 1, function(v) State.SilentAim = v end)
-CreateCycleButton(CombatPage, "Цель Aim", { "Head", "Jaw", "Body", "Tail", "Leg" }, 1, 2, function(opt) State.AimPart = opt end)
+CreateToggle(CombatPage, "Aimbot (Поворот камеры)", State.AimbotEnabled, 1, function(v) State.AimbotEnabled = v end)
+CreateCycleButton(CombatPage, "Цель Aimbot", { "Head", "Body", "HumanoidRootPart" }, 1, 2, function(opt) 
+    State.AimPart = (opt == "HumanoidRootPart" and "Body" or opt) 
+end)
+CreateCycleButton(CombatPage, "Плавность Aimbot", { "0.1 (Медленно)", "0.25 (Средне)", "0.5 (Быстро)", "1.0 (Мгновенно)" }, 2, 3, function(_, idx) State.Smoothness = ({0.1, 0.25, 0.5, 1.0})[idx] end)
 
-CreateToggle(RenderPage, "ESP Игроков", State.ESPEnabled, 1, function(v) State.ESPEnabled = v end)
-CreateToggle(RenderPage, "Показывать HP", State.ESPHealth, 2, function(v) State.ESPHealth = v end)
-CreateToggle(RenderPage, "Показывать Стамину", State.ESPStamina, 3, function(v) State.ESPStamina = v end)
-CreateCycleButton(RenderPage, "Дистанция ESP", { 1000, 2000, 3500, 5000 }, 2, 4, function(val) State.ESPDistance = val end)
+CreateToggle(CombatPage, "Hitbox Expander (Увеличение)", State.HitboxEnabled, 4, function(v) State.HitboxEnabled = v end)
+CreateCycleButton(CombatPage, "Размер Hitbox", { "8", "12", "15", "20", "30" }, 3, 5, function(_, idx) State.HitboxSize = ({8, 12, 15, 20, 30})[idx] end)
+
+CreateToggle(RenderPage, "ESP Игроков (Не сквозь стены)", State.ESPEnabled, 1, function(v) State.ESPEnabled = v end)
+CreateToggle(RenderPage, "Обводка (Highlight)", State.ESPOutline, 2, function(v) State.ESPOutline = v end)
+CreateToggle(RenderPage, "Показывать HP", State.ESPHealth, 3, function(v) State.ESPHealth = v end)
+CreateToggle(RenderPage, "Круг радиуса ESP", State.ESPRadius, 4, function(v) State.ESPRadius = v end)
+CreateCycleButton(RenderPage, "Дистанция ESP", { 1000, 2000, 3500, 5000 }, 2, 5, function(val) State.ESPDistance = val end)
 
 local function MinimizeUI() if State.Minimized then return end State.Minimized = true; MainFrame.Visible = false; MiniIcon.Size = IconSize; MiniIcon.Visible = true end
 local function RestoreUI() if not State.Minimized then return end State.Minimized = false; MiniIcon.Visible = false; MainFrame.Visible = true end
 local function DeactivateScript()
     if not State.Active then return end
-    State.Active = false; State.SilentAim = false; State.ESPEnabled = false
+    State.Active = false; State.AimbotEnabled = false; State.ESPEnabled = false; State.HitboxEnabled = false; State.ESPRadius = false
     for _, conn in ipairs(State.Connections) do pcall(function() conn:Disconnect() end) end
+    for _, hl in pairs(highlights) do pcall(function() hl:Destroy() end) end
     if espFolder then pcall(function() espFolder:Destroy() end) end
+    if radiusCircle then pcall(function() radiusCircle:Destroy() end) end
     pcall(function() ScreenGui:Destroy() end)
-    Env.PriorUI2_Cleanup = nil
-    Utils.Notify("Prior 2", "Скрипт выгружен.")
+    Env.BRM5_Cleanup = nil
+    Utils.Notify("BRM5", "Скрипт выгружен.")
 end
-Env.PriorUI2_Cleanup = DeactivateScript
+Env.BRM5_Cleanup = DeactivateScript
 Utils.Drag(TopBar, MainFrame, nil); Utils.Drag(MiniIcon, MiniIcon, RestoreUI)
 Utils.Track(MinimizeBtn.Activated:Connect(MinimizeUI)); Utils.Track(DeactivateBtn.Activated:Connect(DeactivateScript))
+
+-- Главный цикл
+Utils.Track(RunService.RenderStepped:Connect(function()
+    if not State.Active then return end
+    UpdateHitboxes()
+    UpdateAimbot()
+    UpdateESP()
+    UpdateRadius()
+end))
 
 task.spawn(function() pcall(function() TweenService:Create(MainFrame, TweenInfo.new(0.45, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Size = TargetSize }):Play() end) end)
