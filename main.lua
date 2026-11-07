@@ -1,5 +1,5 @@
--- Prior Extinction // Ultimate Mobile (Fixed Strong Reach & Hitbox + Smart Cache + Species ESP + Unlock Camera)
-print("[PE] Запуск исправленной версии с мощным Reach и Hitbox...")
+-- Prior Extinction // Ultimate Mobile (Fixed Persistent Reach, Hitbox & Deep SilentAim + Species ESP + Unlock Camera)
+print("[PE] Запуск исправленной боевой версии...")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -69,12 +69,13 @@ local ReachLabels = { "0.5x (Уменьш.)", "14м (Форма)", "22м (Фор
 local TransValues = { 0.2, 0.5, 0.75, 0.9, 1.0 }
 local TransLabels = { "0.2 (Яркий)", "0.5 (Средний)", "0.75 (Слабый)", "0.9 (Почти невид.)", "1.0 (Невидимый)" }
 
+-- Чистые анатомические паттерны (только по имени самой детали, без ложного срабатывания на папку Hitboxes)
 local PartPatterns = {
-    Jaw = { "jaw", "mandible", "snout", "mouth", "bite", "muzzle", "beak", "fang", "teeth", "attack", "damage", "hurt", "weap", "hit" },
-    Head = { "head", "skull", "cranium", "neckhead", "horn", "crest", "frill", "throat", "neck1", "neck_1" },
+    Jaw = { "jaw", "mandible", "snout", "mouth", "bite", "muzzle", "beak", "fang", "teeth" },
+    Head = { "head", "skull", "cranium", "neckhead", "horn", "crest", "frill", "throat" },
     Tail = { "tail", "thago", "club", "rattle", "spike", "fluke" },
-    Body = { "chest", "ribcage", "abdomen", "bodyhitbox", "hitboxbody", "upperbody", "spine", "torso", "body", "pelvis", "hip", "back", "stomach" },
-    Leg = { "leg", "thigh", "calf", "shin", "foot", "ankle", "claw", "arm", "hand", "forelimb", "toe", "wing", "talon" }
+    Leg = { "leg", "thigh", "calf", "shin", "foot", "ankle", "claw", "arm", "hand", "forelimb", "toe", "wing", "talon" },
+    Body = { "chest", "ribcage", "abdomen", "bodyhitbox", "hitboxbody", "upperbody", "spine", "torso", "body", "pelvis", "hip", "back", "stomach" }
 }
 
 -- 2. Utils
@@ -339,21 +340,21 @@ function SaveDino.Init()
     end))
 end
 
--- 6. Combat & Умный динамический кэш для Reach и Hitbox (100% срабатывание без лагов)
+-- 6. Combat (Исправленный классификатор частей + Удержание 30 Гц + Глубокий Silent Aim)
 local Combat = {}
 local ZP = PhysicalProperties.new(0.0001, 0, 0, 0, 0)
 local CachedLocalGroups = nil
 
-local function matchCat(part, fullTail)
-    local nameStr = string.lower(part.Name)
-    local parentStr = (part.Parent and part.Parent ~= Workspace) and string.lower(part.Parent.Name) or ""
-    local combined = nameStr .. " " .. parentStr
-
+-- Проверяет ТОЛЬКО имя самой детали, чтобы папка "Hitboxes" не ломала категории
+local function matchCat(partName, fullTail)
+    local l = string.lower(partName)
     for _, c in ipairs({ "Jaw", "Head", "Tail", "Leg", "Body" }) do
         for _, p in ipairs(PartPatterns[c]) do
-            if string.find(combined, p, 1, true) then
+            if string.find(l, p, 1, true) then
                 if c == "Tail" and not fullTail then
-                    if string.find(nameStr, "tip", 1, true) or string.match(nameStr, "tail[_%s]*[4-9]") then return nil end
+                    if string.find(l, "tip", 1, true) or string.match(l, "tail[_%s]*[3-9]") then
+                        return nil
+                    end
                 end
                 return c
             end
@@ -362,27 +363,44 @@ local function matchCat(part, fullTail)
     return nil
 end
 
-local function isLocal(m) return LocalPlayer.Character and (m == LocalPlayer.Character or m:IsDescendantOf(LocalPlayer.Character)) end
+local function isLocal(m)
+    return LocalPlayer.Character and (m == LocalPlayer.Character or m:IsDescendantOf(LocalPlayer.Character))
+end
 
+-- Обязательная защита физического корня AssemblyRootPart (чтобы Reach и Hitbox не сбрасывались через 1 секунду!)
 local function isCritRoot(model, part)
     if not part or not model then return true end
     local l = string.lower(part.Name)
-    if l == "humanoidrootpart" or l == "rootpart" or l == "root" or l == "primary" or model.PrimaryPart == part then return true end
-    return false
+    if l == "humanoidrootpart" or l == "rootpart" or l == "root" or l == "primary" or model.PrimaryPart == part then
+        return true
+    end
+    local ok, ar = pcall(function() return part.AssemblyRootPart end)
+    return ok and ar == part
 end
 
 local function findPart(model, cat)
     local c = State.CachedModels[model]
-    if c and c[cat] then for _, p in ipairs(c[cat]) do if p and p.Parent then return p end end end
-    for _, d in ipairs(model:GetDescendants()) do if d:IsA("BasePart") and matchCat(d, false) == cat then return d end end
-    return nil
+    if c and c[cat] then
+        for _, p in ipairs(c[cat]) do
+            if p and p.Parent then return p end
+        end
+    end
+    for _, d in ipairs(model:GetDescendants()) do
+        if d:IsA("BasePart") and not isCritRoot(model, d) and matchCat(d.Name, false) == cat then
+            return d
+        end
+    end
+    -- Резервный возврат: если выбранная часть (например Jaw) не найдена отдельно, возвращаем Head или любую боевую часть
+    if cat == "Jaw" and c and c.Head and c.Head[1] then return c.Head[1] end
+    if c and c.Body and c.Body[1] then return c.Body[1] end
+    return model:FindFirstChild("Head", true)
 end
 
 local function getEnemy(part)
     if not part or not part:IsA("BasePart") or isLocal(part) then return nil end
     local cur = part.Parent
     while cur and cur ~= Workspace do
-        if cur:IsA("Model") and (cur:FindFirstChildOfClass("Humanoid") or cur:FindFirstChild("Head", true)) then
+        if cur:IsA("Model") and (cur:FindFirstChildOfClass("Humanoid") or cur:FindFirstChild("Head", true) or cur:FindFirstChild("Hitboxes", true)) then
             if not isLocal(cur) then return cur end
         end
         cur = cur.Parent
@@ -391,35 +409,43 @@ local function getEnemy(part)
 end
 
 function Combat.ScanModel(model, isSelf)
-    local cats = { Head = {}, Jaw = {}, Body = {}, Tail = {}, Leg = {}, Total = 0 }
+    local cats = { Head = {}, Jaw = {}, Body = {}, Tail = {}, Leg = {} }
+    local added = { Head = {}, Jaw = {}, Body = {}, Tail = {}, Leg = {} }
+
+    local function addUnique(cat, part)
+        if not added[cat][part] then
+            added[cat][part] = true
+            table.insert(cats[cat], part)
+        end
+    end
+
     pcall(function()
         for _, d in ipairs(model:GetDescendants()) do
             if d:IsA("BasePart") and not isCritRoot(model, d) then
-                local c = matchCat(d, isSelf)
+                local c = matchCat(d.Name, isSelf)
                 if c and cats[c] then
-                    table.insert(cats[c], d)
-                    cats.Total = cats.Total + 1
+                    addUnique(c, d)
                 end
-                -- Если на детали висит TouchTransmitter (боевой триггер укуса), обязательно добавляем её в Jaw и Head
-                if d:FindFirstChildOfClass("TouchTransmitter") then
-                    table.insert(cats.Jaw, d)
-                    cats.Total = cats.Total + 1
+                -- Если на детали есть TouchTransmitter (триггер укуса), добавляем её в Jaw дополнительно
+                if isSelf and d:FindFirstChildOfClass("TouchTransmitter") then
+                    addUnique("Jaw", d)
                 end
             end
         end
-        -- Если у динозавра челюсть объединена с Head, дублируем Head в Jaw, чтобы оба режима всегда срабатывали
+
+        -- Если у динозавра челюсть и голова — одна деталь, синхронизируем списки, чтобы и Jaw, и Head работали всегда
         if #cats.Jaw == 0 and #cats.Head > 0 then
-            for _, hp in ipairs(cats.Head) do table.insert(cats.Jaw, hp) end
+            for _, hp in ipairs(cats.Head) do addUnique("Jaw", hp) end
         elseif #cats.Head == 0 and #cats.Jaw > 0 then
-            for _, jp in ipairs(cats.Jaw) do table.insert(cats.Head, jp) end
+            for _, jp in ipairs(cats.Jaw) do addUnique("Head", jp) end
         end
+
         if #cats.Body == 0 then
             for _, d in ipairs(model:GetDescendants()) do
                 if d:IsA("BasePart") and not isCritRoot(model, d) then
                     local n = string.lower(d.Name)
                     if string.find(n, "hit", 1, true) or string.find(n, "spine", 1, true) or string.find(n, "rib", 1, true) or string.find(n, "torso", 1, true) then
-                        table.insert(cats.Body, d)
-                        cats.Total = cats.Total + 1
+                        addUnique("Body", d)
                     end
                 end
             end
@@ -428,16 +454,16 @@ function Combat.ScanModel(model, isSelf)
     return cats
 end
 
--- Сохраняет вытянутую форму челюсти/хвоста/ног (не квадрат!), но дает достаточную объемную ширину (0.68), чтобы урон всегда регался
+-- Сохраняет вытянутую форму детали (не куб!), но гарантирует нужный боевой радиус
 local function GetProportionalSize(origSize, targetRange)
     if targetRange < 0 then
         return origSize * math.abs(targetRange)
     end
     local maxAxis = math.max(origSize.X, origSize.Y, origSize.Z, 0.5)
     local ratio = Vector3.new(
-        math.clamp(origSize.X / maxAxis, 0.68, 1.0),
-        math.clamp(origSize.Y / maxAxis, 0.68, 1.0),
-        math.clamp(origSize.Z / maxAxis, 0.68, 1.0)
+        math.clamp(origSize.X / maxAxis, 0.72, 1.0),
+        math.clamp(origSize.Y / maxAxis, 0.72, 1.0),
+        math.clamp(origSize.Z / maxAxis, 0.72, 1.0)
     )
     return ratio * targetRange
 end
@@ -453,6 +479,49 @@ local function IsCleanBridgePacket(arg1)
     return false
 end
 
+-- Рекурсивный перехватчик таблиц для Silent Aim (проходит внутрь пакетов BridgeNet2 до 4 уровней вглубь)
+local function ProcessSilentAimTable(tbl, aimCat, depth)
+    if depth > 4 then return false end
+    local changed = false
+    local lastTargetPart = nil
+
+    for k, v in pairs(tbl) do
+        if typeof(v) == "Instance" then
+            if v:IsA("BasePart") then
+                local em = getEnemy(v)
+                if em then
+                    local tp = findPart(em, aimCat)
+                    if tp then
+                        tbl[k] = tp
+                        lastTargetPart = tp
+                        changed = true
+                    end
+                end
+            elseif v:IsA("Model") and not isLocal(v) then
+                local tp = findPart(v, aimCat)
+                if tp then lastTargetPart = tp end
+            end
+        elseif type(v) == "table" then
+            if ProcessSilentAimTable(v, aimCat, depth + 1) then
+                changed = true
+            end
+        end
+    end
+
+    -- Если в этой таблице была заменена деталь врага, подставляем её точные координаты
+    if lastTargetPart then
+        for k, v in pairs(tbl) do
+            if typeof(v) == "Vector3" then
+                tbl[k] = lastTargetPart.Position
+            elseif typeof(v) == "CFrame" then
+                tbl[k] = lastTargetPart.CFrame
+            end
+        end
+    end
+
+    return changed
+end
+
 if not Env.PriorUI_HookInstalled then
     pcall(function()
         local old
@@ -463,6 +532,7 @@ if not Env.PriorUI_HookInstalled then
             if m == "FireServer" or m == "InvokeServer" then
                 local args = { ... }
                 local rName = tostring(self.Name)
+
                 if m == "FireServer" and rName == "dataRemoteEvent" then
                     pcall(function()
                         if IsCleanBridgePacket(args[1]) then
@@ -470,23 +540,24 @@ if not Env.PriorUI_HookInstalled then
                         end
                     end)
                 end
-                if cs.SaveDinoPhase ~= "idle" and string.find(string.lower(rName), "fall", 1, true) then return nil end
+
+                if cs.SaveDinoPhase ~= "idle" and string.find(string.lower(rName), "fall", 1, true) then
+                    return nil
+                end
+
                 if cs.SilentAim then
                     local modified = false
                     pcall(function()
                         for i, arg in ipairs(args) do
                             if typeof(arg) == "Instance" and arg:IsA("BasePart") then
                                 local em = getEnemy(arg)
-                                if em then local tp = findPart(em, cs.AimTargetPart); if tp then args[i] = tp; modified = true end end
+                                if em then
+                                    local tp = findPart(em, cs.AimTargetPart)
+                                    if tp then args[i] = tp; modified = true end
+                                end
                             elseif type(arg) == "table" then
-                                for k, v in pairs(arg) do
-                                    if typeof(v) == "Instance" and v:IsA("BasePart") then
-                                        local em = getEnemy(v)
-                                        if em then
-                                            local tp = findPart(em, cs.AimTargetPart)
-                                            if tp then arg[k] = tp; if typeof(arg.Position) == "Vector3" then arg.Position = tp.Position end; modified = true end
-                                        end
-                                    end
+                                if ProcessSilentAimTable(arg, cs.AimTargetPart, 1) then
+                                    modified = true
                                 end
                             end
                         end
@@ -501,19 +572,14 @@ if not Env.PriorUI_HookInstalled then
 end
 
 function Combat.Init()
-    -- Умное фоновое обновление кэша каждую 1 секунду (пересканирует модель, если она подгрузилась через StreamingEnabled)
+    -- 1. Фоновое обновление списков деталей (раз в 1.2 сек — не нагружает телефон)
     task.spawn(function()
         while State.Active do
             pcall(function()
                 local nc = {}
                 for _, p in ipairs(Players:GetPlayers()) do
                     if p ~= LocalPlayer and p.Character then
-                        local prev = State.CachedModels[p.Character]
-                        if not prev or prev.Total == 0 or (#prev.Head == 0 and #prev.Body == 0) then
-                            nc[p.Character] = Combat.ScanModel(p.Character, false)
-                        else
-                            nc[p.Character] = prev
-                        end
+                        nc[p.Character] = Combat.ScanModel(p.Character, false)
                     end
                 end
                 State.CachedModels = nc
@@ -525,88 +591,127 @@ function Combat.Init()
                     CachedLocalGroups = nil
                 end
             end)
-            task.wait(1.0)
+            task.wait(1.2)
         end
     end)
 
-    -- Отзывчивый цикл применения Reach и Hitbox (0.12 сек — мгновенный отклик без нагрузки на CPU)
-    task.spawn(function()
-        while State.Active do
-            pcall(function()
-                -- 1. Enemy Hitboxes (обрабатываем до 6 сегментов выбранной части тела врага)
-                if State.HitboxMaster or next(State.OriginalParts) ~= nil then
-                    for model, groups in pairs(State.CachedModels) do
-                        if model and model.Parent and not isLocal(model) then
-                            local tCat = State.SelectedHitboxPart
-                            local tSize = HitboxSizes[State.HitboxSizeLevel] or 25
-                            for cat, parts in pairs(groups) do
-                                if type(parts) == "table" then
-                                    for idx, part in ipairs(parts) do
-                                        if part and part.Parent and not isCritRoot(model, part) then
-                                            if not State.OriginalParts[part] then
-                                                State.OriginalParts[part] = {
-                                                    Size = part.Size, Transparency = part.Transparency, CanCollide = part.CanCollide,
-                                                    CanQuery = part.CanQuery, CanTouch = part.CanTouch, Massless = part.Massless,
-                                                    CustomPhysicalProperties = part.CustomPhysicalProperties, RootPriority = part.RootPriority
-                                                }
-                                            end
-                                            local o = State.OriginalParts[part]
-                                            if State.HitboxMaster and cat == tCat and idx <= 6 then
-                                                part.Massless = true; part.CanCollide = false; part.CustomPhysicalProperties = ZP; part.RootPriority = -127
-                                                part.Size = GetProportionalSize(o.Size, tSize)
-                                                part.Transparency = State.HitboxTransparency; part.CanTouch = true; part.CanQuery = true
-                                            else
-                                                part.Size = o.Size; part.Transparency = o.Transparency; part.CanCollide = o.CanCollide; part.Massless = o.Massless
-                                                part.CanTouch = o.CanTouch; part.CanQuery = o.CanQuery; part.CustomPhysicalProperties = o.CustomPhysicalProperties; part.RootPriority = o.RootPriority
-                                            end
-                                        end
-                                    end
-                                end
-                            end
+    -- 2. Быстрое удержание размеров (каждые 0.03 сек по готовому кэшу — игра не может сбросить Reach или Hitbox!)
+    local lastApply = 0
+    Utils.Track(RunService.Heartbeat:Connect(function()
+        if not State.Active then return end
+        local now = os.clock()
+        if (now - lastApply) < 0.03 then return end
+        lastApply = now
+
+        -- Вражеские хитбоксы
+        if State.HitboxMaster or next(State.OriginalParts) ~= nil then
+            local tCat = State.SelectedHitboxPart
+            local tSize = HitboxSizes[State.HitboxSizeLevel] or 25
+            for model, groups in pairs(State.CachedModels) do
+                if model and model.Parent and not isLocal(model) then
+                    local activeMap = {}
+                    if State.HitboxMaster and groups[tCat] then
+                        for idx, part in ipairs(groups[tCat]) do
+                            if idx <= 6 then activeMap[part] = true end
                         end
                     end
-                end
 
-                -- 2. Local Reach (Все выбранные части: Челюсть, Голова, Весь хвост, Ноги, Тело)
-                local myChar = LocalPlayer.Character
-                if myChar and myChar.Parent and CachedLocalGroups and (State.ReachEnabled or next(State.LocalOriginalParts) ~= nil) then
-                    local targetRange = ReachRanges[State.ReachScaleLevel] or 22
-                    local appliedThisTick = {}
-
-                    for cat, parts in pairs(CachedLocalGroups) do
-                        if type(parts) == "table" then
-                            local isSel = State.ReachParts[cat] == true
-                            for _, part in ipairs(parts) do
-                                if part and part.Parent and not isCritRoot(myChar, part) then
-                                    if not State.LocalOriginalParts[part] then
-                                        State.LocalOriginalParts[part] = {
+                    for _, parts in pairs(groups) do
+                        for _, part in ipairs(parts) do
+                            if part and part.Parent and not isCritRoot(model, part) then
+                                local o = State.OriginalParts[part]
+                                if activeMap[part] then
+                                    if not o then
+                                        o = {
                                             Size = part.Size, Transparency = part.Transparency, CanCollide = part.CanCollide,
                                             CanQuery = part.CanQuery, CanTouch = part.CanTouch, Massless = part.Massless,
                                             CustomPhysicalProperties = part.CustomPhysicalProperties, RootPriority = part.RootPriority
                                         }
+                                        State.OriginalParts[part] = o
                                     end
-                                    local orig = State.LocalOriginalParts[part]
-                                    if State.ReachEnabled and isSel then
-                                        appliedThisTick[part] = true
-                                        part.Massless = true; part.CanCollide = false; part.CustomPhysicalProperties = ZP; part.RootPriority = -127
-                                        part.Size = GetProportionalSize(orig.Size, targetRange)
-                                        part.Transparency = State.ReachTransparency; part.CanTouch = true; part.CanQuery = true
-                                    elseif not appliedThisTick[part] then
-                                        part.Size = orig.Size; part.Transparency = orig.Transparency
-                                        if State.SaveDinoPhase == "idle" then part.CanCollide = orig.CanCollide end
-                                        part.Massless = orig.Massless; part.CanTouch = orig.CanTouch; part.CanQuery = orig.CanQuery
-                                        part.CustomPhysicalProperties = orig.CustomPhysicalProperties; part.RootPriority = orig.RootPriority
-                                    end
+                                    part.Massless = true
+                                    part.CanCollide = false
+                                    part.CustomPhysicalProperties = ZP
+                                    part.RootPriority = -127
+                                    part.Size = GetProportionalSize(o.Size, tSize)
+                                    part.Transparency = State.HitboxTransparency
+                                    part.CanTouch = true
+                                    part.CanQuery = true
+                                elseif o then
+                                    part.Size = o.Size
+                                    part.Transparency = o.Transparency
+                                    part.CanCollide = o.CanCollide
+                                    part.Massless = o.Massless
+                                    part.CanTouch = o.CanTouch
+                                    part.CanQuery = o.CanQuery
+                                    part.CustomPhysicalProperties = o.CustomPhysicalProperties
+                                    part.RootPriority = o.RootPriority
+                                    State.OriginalParts[part] = nil
                                 end
                             end
                         end
                     end
                 end
-            end)
-            task.wait(0.12)
+            end
         end
-    end)
 
+        -- Локальный Reach (удерживается постоянно без сброса через секунду)
+        local myChar = LocalPlayer.Character
+        if myChar and myChar.Parent and CachedLocalGroups and (State.ReachEnabled or next(State.LocalOriginalParts) ~= nil) then
+            local targetRange = ReachRanges[State.ReachScaleLevel] or 22
+            local activeReachParts = {}
+
+            if State.ReachEnabled then
+                for cat, parts in pairs(CachedLocalGroups) do
+                    if State.ReachParts[cat] == true then
+                        for _, part in ipairs(parts) do
+                            activeReachParts[part] = true
+                        end
+                    end
+                end
+            end
+
+            for _, parts in pairs(CachedLocalGroups) do
+                for _, part in ipairs(parts) do
+                    if part and part.Parent and not isCritRoot(myChar, part) then
+                        local orig = State.LocalOriginalParts[part]
+                        if activeReachParts[part] then
+                            if not orig then
+                                orig = {
+                                    Size = part.Size, Transparency = part.Transparency, CanCollide = part.CanCollide,
+                                    CanQuery = part.CanQuery, CanTouch = part.CanTouch, Massless = part.Massless,
+                                    CustomPhysicalProperties = part.CustomPhysicalProperties, RootPriority = part.RootPriority
+                                }
+                                State.LocalOriginalParts[part] = orig
+                            end
+                            part.Massless = true
+                            part.CanCollide = false
+                            part.CustomPhysicalProperties = ZP
+                            part.RootPriority = -127
+                            part.Size = GetProportionalSize(orig.Size, targetRange)
+                            part.Transparency = State.ReachTransparency
+                            part.CanTouch = true
+                            part.CanQuery = true
+                        elseif orig then
+                            part.Size = orig.Size
+                            part.Transparency = orig.Transparency
+                            if State.SaveDinoPhase == "idle" then
+                                part.CanCollide = orig.CanCollide
+                            end
+                            part.Massless = orig.Massless
+                            part.CanTouch = orig.CanTouch
+                            part.CanQuery = orig.CanQuery
+                            part.CustomPhysicalProperties = orig.CustomPhysicalProperties
+                            part.RootPriority = orig.RootPriority
+                            State.LocalOriginalParts[part] = nil
+                        end
+                    end
+                end
+            end
+        end
+    end))
+
+    -- 3. No Attack CD
     task.spawn(function()
         while State.Active do
             if State.NoAttackCD then
@@ -645,7 +750,7 @@ function Combat.RestoreAll()
     table.clear(State.OriginalParts); table.clear(State.LocalOriginalParts)
 end
 
--- 7. ESP (Точное определение названия динозавра + Кэш для телефонов)
+-- 7. ESP
 local ESPModule = {}
 local espGuis, worldGuis, trackedWorld, stamTrack, headCache, speciesCache = {}, {}, {}, {}, {}, {}
 local worldScanDone, worldScanning = false, false
