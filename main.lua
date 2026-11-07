@@ -1,4 +1,4 @@
--- Prior Extinction // Mobile-Optimized Ultimate (Zero-Lag Cache + Fixed Species ESP + Proportional Reach + Unlock Camera)
+-- Prior Extinction // Mobile-Optimized Ultimate (Fixed Hitbox/Reach Cache)
 print("[PE] Запуск мобильной оптимизированной версии...")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -125,7 +125,7 @@ function Utils.DeepClone(tbl, seen)
     return copy
 end
 
--- 3. Visuals & Unlock Camera (Оптимизировано под телефон: без тяжелых покадровых циклов)
+-- 3. Visuals & Unlock Camera
 local Visuals = {}
 local wasNightVision = false
 local wasUnlockCam = false
@@ -181,7 +181,7 @@ function Visuals.Init()
                     Visuals.RestoreLighting()
                 end
 
-                -- 3. No Blur & No Sleep Screen (без тяжелого GetDescendants по всему PlayerGui)
+                -- 3. No Blur & No Sleep Screen
                 if State.NoBlur or State.NoSleepScreen then
                     ProcessPostEffects(Lighting)
                     if Workspace.CurrentCamera then
@@ -342,12 +342,10 @@ function SaveDino.Init()
     end))
 end
 
--- 6. Combat & Кэшированный Пропорциональный Reach (0 лагов на телефоне!)
+-- 6. Combat & Кэшированный Пропорциональный Reach (ИСПРАВЛЕНО)
 local Combat = {}
 local ZP = PhysicalProperties.new(0.0001, 0, 0, 0, 0)
 local CachedLocalGroups = nil
-local LastLocalScanChar = nil
-local LastLocalPartCount = 0
 
 local function matchCat(part, fullTail)
     local nameStr = string.lower(part.Name)
@@ -494,41 +492,34 @@ if not Env.PriorUI_HookInstalled then
 end
 
 function Combat.Init()
-    -- Медленный фоновый кэш моделей (раз в 2 секунды, только когда включены боевые функции)
+    -- 1. Фоновое сканирование моделей (ИСПРАВЛЕНО: сканирует всегда, а не только при изменении childCount)
     task.spawn(function()
         while State.Active do
             pcall(function()
                 if State.HitboxMaster or State.SilentAim then
-                    local nc = {}
                     for _, p in ipairs(Players:GetPlayers()) do
                         if p ~= LocalPlayer and p.Character then
-                            nc[p.Character] = State.CachedModels[p.Character] or Combat.ScanModel(p.Character, false)
+                            State.CachedModels[p.Character] = Combat.ScanModel(p.Character, false)
                         end
                     end
-                    State.CachedModels = nc
                 end
 
                 local myChar = LocalPlayer.Character
                 if myChar then
-                    local childCount = #myChar:GetChildren()
-                    if myChar ~= LastLocalScanChar or math.abs(childCount - LastLocalPartCount) > 2 or not CachedLocalGroups then
-                        LastLocalScanChar = myChar
-                        LastLocalPartCount = childCount
-                        CachedLocalGroups = Combat.ScanModel(myChar, true)
-                    end
+                    CachedLocalGroups = Combat.ScanModel(myChar, true)
                 else
                     CachedLocalGroups = nil
                 end
             end)
-            task.wait(2.0)
+            task.wait(2.0) -- Сканируем раз в 2 секунды. Это не лагает и гарантирует, что все части будут найдены.
         end
     end)
 
-    -- Быстрый цикл применения размеров по готовому кэшу (0 вызовов GetDescendants!)
+    -- 2. Быстрый цикл применения размеров (применяет изменения к уже найденным деталям)
     task.spawn(function()
         while State.Active do
             pcall(function()
-                -- 1. Enemy Hitboxes
+                -- Хитбоксы врагов
                 if State.HitboxMaster or next(State.OriginalParts) ~= nil then
                     for model, groups in pairs(State.CachedModels) do
                         if model and model.Parent and not isLocal(model) then
@@ -554,7 +545,7 @@ function Combat.Init()
                     end
                 end
 
-                -- 2. Local Reach (по готовому кэшу CachedLocalGroups)
+                -- Твой собственный Reach
                 local myChar = LocalPlayer.Character
                 if myChar and myChar.Parent and CachedLocalGroups and (State.ReachEnabled or next(State.LocalOriginalParts) ~= nil) then
                     local targetRange = ReachRanges[State.ReachScaleLevel] or 20
@@ -662,7 +653,6 @@ local function ExtractNumber(v)
     return nil
 end
 
--- Фильтр мусорных технических слов, чтобы в ESP никогда не попадали Rig, Male, Default, Hitbox и т.д.
 local InvalidSpeciesWords = {
     ["rig"] = true, ["model"] = true, ["default"] = true, ["male"] = true, ["female"] = true,
     ["adult"] = true, ["juvenile"] = true, ["baby"] = true, ["subadult"] = true, ["hatchling"] = true,
@@ -677,11 +667,8 @@ local function CleanSpeciesString(raw, player)
     if #s < 3 or #s > 32 then return nil end
     if s == player.Name or s == player.DisplayName then return nil end
     if tonumber(s) then return nil end
-
-    -- Если строка вида "PlayerName_Torvosaurus" или "Torvosaurus_Adult", убираем имя игрока и возраст
     s = string.gsub(s, player.Name, "")
     s = string.gsub(s, "^[%s_%-]+", ""):gsub("[%s_%-]+$", "")
-
     local low = string.lower(s)
     if InvalidSpeciesWords[low] then return nil end
     if string.find(low, "hitbox", 1, true) or string.find(low, "rig", 1, true) or string.find(low, "effect", 1, true) or string.find(low, " saddle", 1, true) or string.find(low, "anim", 1, true) then
@@ -700,10 +687,7 @@ local function GetDinoSpeciesName(player, model)
     if speciesCache[model] and (os.clock() - speciesCache[model].time) < 4.0 then
         return speciesCache[model].name
     end
-
     local foundName = nil
-
-    -- 1. Точный поиск в атрибутах Player и Character
     for _, inst in ipairs({ model, player, model:FindFirstChildOfClass("Humanoid") }) do
         if inst and not foundName then
             local ok, attrs = pcall(function() return inst:GetAttributes() end)
@@ -720,14 +704,10 @@ local function GetDinoSpeciesName(player, model)
             end
         end
     end
-
-    -- 2. Поиск в StringValue / ObjectValue внутри папок данных игрока и модели
     if not foundName then
         for _, cont in ipairs({
-            model, player,
-            player:FindFirstChild("Data"), player:FindFirstChild("PlayerData"),
-            player:FindFirstChild("Stats"), player:FindFirstChild("leaderstats"),
-            model:FindFirstChild("Data"), model:FindFirstChild("Stats")
+            model, player, player:FindFirstChild("Data"), player:FindFirstChild("PlayerData"),
+            player:FindFirstChild("Stats"), player:FindFirstChild("leaderstats"), model:FindFirstChild("Data"), model:FindFirstChild("Stats")
         }) do
             if cont and not foundName then
                 for _, obj in ipairs(cont:GetChildren()) do
@@ -748,14 +728,10 @@ local function GetDinoSpeciesName(player, model)
             end
         end
     end
-
-    -- 3. Проверяем имя самой модели персонажа (если игра переименовывает Character в вид динозавра)
     if not foundName then
         local cleanedModelName = CleanSpeciesString(model.Name, player)
         if cleanedModelName then foundName = cleanedModelName end
     end
-
-    -- 4. Проверяем Humanoid.DisplayName (если в нем записан вид динозавра)
     if not foundName then
         local hum = model:FindFirstChildOfClass("Humanoid")
         if hum then
@@ -763,7 +739,6 @@ local function GetDinoSpeciesName(player, model)
             if cleanedHum then foundName = cleanedHum end
         end
     end
-
     speciesCache[model] = { name = foundName, time = os.clock() }
     return foundName
 end
@@ -773,7 +748,6 @@ local function GetDinoStats(player, model, headPart)
     local realStam, realMaxStam = nil, nil
     local hum = model:FindFirstChildOfClass("Humanoid")
     if hum then hp = hum.Health; maxHp = hum.MaxHealth end
-
     local function CheckKV(rawName, rawVal)
         local num = ExtractNumber(rawVal); if not num then return end
         local n = string.lower(tostring(rawName))
@@ -782,7 +756,6 @@ local function GetDinoStats(player, model, headPart)
         elseif string.find(n, "maxstam", 1, true) or string.find(n, "max_stamina", 1, true) or string.find(n, "maxenergy", 1, true) then if num > 0 then realMaxStam = num end
         elseif string.find(n, "stam", 1, true) or n == "energy" or n == "currentstamina" then realStam = num end
     end
-
     for _, inst in ipairs({ model, hum, player }) do
         if inst then
             local ok, attrs = pcall(function() return inst:GetAttributes() end)
@@ -790,15 +763,12 @@ local function GetDinoStats(player, model, headPart)
         end
     end
     for _, obj in ipairs(model:GetChildren()) do if obj:IsA("ValueBase") then pcall(function() CheckKV(obj.Name, obj.Value) end) end end
-
     if not maxHp or maxHp <= 0 then maxHp = math.max(hp, 100) end
     local maxStam = (realMaxStam and realMaxStam > 0) and realMaxStam or 100
-
     local movePart = getDinoRoot(model) or headPart
     local now = os.clock()
     local pos = movePart and movePart.Position or Vector3.zero
     local track = stamTrack[player]
-
     if not track or track.char ~= model then
         track = { char = model, stam = maxStam, smoothSpeed = 0, lastTime = now, lastPos = pos, lastSprintTime = 0, srvChanged = false, initSrv = realStam }
         stamTrack[player] = track
@@ -1075,7 +1045,6 @@ end
 
 local CombatPage = CreateTab("Combat"); local RenderPage = CreateTab("Render"); local ToolsPage = CreateTab("Tools")
 
--- Вкладка Combat
 CreateToggle(CombatPage, "Reach (Дальность + Форма частей тела)", State.ReachEnabled, 1, function(v) State.ReachEnabled = v end)
 CreateCycleButton(CombatPage, "Дистанция / Форма Reach", ReachLabels, State.ReachScaleLevel, 2, function(_, idx) State.ReachScaleLevel = idx end)
 CreateCycleButton(CombatPage, "Прозрачность Reach", TransLabels, State.ReachTransLevel, 3, function(_, idx)
@@ -1099,7 +1068,6 @@ CreateCycleButton(CombatPage, "Прозрачность Хитбокса Вра�
 end)
 CreateToggle(CombatPage, "No Attack CD", State.NoAttackCD, 15, function(v) State.NoAttackCD = v end)
 
--- Вкладка Render
 CreateToggle(RenderPage, "Unlock Camera (Отдаление без лимита)", State.UnlockCamera, 1, function(v) State.UnlockCamera = v end)
 CreateToggle(RenderPage, "ESP Игроков (Ник + Динозавр + Полоски)", State.ESPEnabled, 2, function(v) State.ESPEnabled = v end)
 CreateToggle(RenderPage, "Показывать Название Динозавра", State.ESP_Species, 3, function(v) State.ESP_Species = v end)
@@ -1112,27 +1080,8 @@ CreateToggle(RenderPage, "Night Vision (Без тумана)", State.NightVision
 CreateToggle(RenderPage, "No Blur (Убрать размытие)", State.NoBlur, 10, function(v) State.NoBlur = v end)
 CreateToggle(RenderPage, "No Sleep Screen (Убрать темный экран)", State.NoSleepScreen, 11, function(v) State.NoSleepScreen = v end)
 
--- Вкладка Tools
 CreateToggle(ToolsPage, "Auto Clean (Вшитый пакет мытья)", State.AutoClean, 1, function(v)
     State.AutoClean = v
     if v then Utils.Notify("Auto Clean", "Пакетное мытье активировано!") end
 end)
-CreateToggle(ToolsPage, "Save Dino", false, 2, function(v) SaveDino.SetEnabled(v) end)
-CreateCycleButton(ToolsPage, "Направление Save Dino", { "Down", "Up" }, 1, 3, function(_, idx) State.SaveDinoMode = (idx == 1) and "Down" or "Up"; SaveDino.RecalculateTarget(); if State.SaveDinoPhase == "holding" then State.SaveDinoPhase = "moving_to_safe" end end)
-CreateCycleButton(ToolsPage, "Глубина Save Dino", { 50, 70, 95, 120 }, 2, 4, function(val) State.SaveDinoOffset = val; SaveDino.RecalculateTarget(); if State.SaveDinoPhase == "holding" then State.SaveDinoPhase = "moving_to_safe" end end)
-
-local function MinimizeUI() if State.Minimized then return end State.Minimized = true; MainFrame.Visible = false; MiniIcon.Size = IconSize; MiniIcon.Visible = true end
-local function RestoreUI() if not State.Minimized then return end State.Minimized = false; MiniIcon.Visible = false; MainFrame.Visible = true end
-local function DeactivateScript()
-    if not State.Active then return end
-    State.Active = false; State.SilentAim = false; State.HitboxMaster = false; State.ReachEnabled = false; State.ESPEnabled = false; State.ESPBones = false; State.ESPCorpses = false; State.NoAttackCD = false; State.AutoClean = false; State.UnlockCamera = false
-    Visuals.Restore(); SaveDino.ForceReset(); Combat.RestoreAll(); ESPModule.Cleanup()
-    for _, conn in ipairs(State.Connections) do pcall(function() conn:Disconnect() end) end; table.clear(State.Connections)
-    pcall(function() ScreenGui:Destroy() end); Env.PriorUI_Cleanup = nil; Utils.Notify("Prior Extinction", "Скрипт выгружен.")
-end
-Env.PriorUI_Cleanup = DeactivateScript
-Utils.Drag(TopBar, MainFrame, nil); Utils.Drag(MiniIcon, MiniIcon, RestoreUI)
-Utils.Track(MinimizeBtn.Activated:Connect(MinimizeUI)); Utils.Track(DeactivateBtn.Activated:Connect(DeactivateScript))
-
-Visuals.Init(); Survival.Init(); SaveDino.Init(); Combat.Init(); ESPModule.Init()
-task.spawn(function() pcall(function() TweenService:Create(MainFrame, TweenInfo.new(0.45, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Size = TargetSize }):Play() end) end)
+CreateToggle(ToolsPage, "Save Dino", false, 2, function(v)
