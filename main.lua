@@ -1,5 +1,5 @@
--- Prior Extinction // Ultimate Compact (Proportional Shape Reach + Fixed NightVision/NoBlur/NoSleep + AutoClean + ESP)
-print("[PE] Запуск полностью исправленного скрипта...")
+-- Prior Extinction // Ultimate Compact (Custom Transparency + Unlock Camera + Proportional Reach + AutoClean + ESP)
+print("[PE] Запуск обновленного скрипта...")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -18,15 +18,16 @@ if Env.PriorUI_Cleanup then pcall(Env.PriorUI_Cleanup) end
 local State = {
     Active = true, Minimized = false, Connections = {}, OriginalParts = {}, LocalOriginalParts = {}, CachedModels = {},
     SilentAim = false, AimTargetPart = "Head",
-    HitboxMaster = false, HitboxTransparency = 0.65, HitboxSizeLevel = 3, SelectedHitboxPart = "Head",
+    HitboxMaster = false, HitboxTransparency = 0.75, HitboxTransLevel = 3, HitboxSizeLevel = 3, SelectedHitboxPart = "Head",
     NoAttackCD = false,
-    -- Пропорциональный Reach (повторяет точную форму частей тела)
-    ReachEnabled = false, ReachScaleLevel = 4, ReachTransparency = 0.7,
+    -- Пропорциональный Reach + настраиваемая прозрачность
+    ReachEnabled = false, ReachScaleLevel = 4, ReachTransparency = 0.75, ReachTransLevel = 3,
     ReachParts = { Jaw = true, Head = true, Tail = false, Leg = false, Body = false },
-    -- Render
+    -- Render & Camera
     ESPEnabled = false, ESPMaxDistance = 2000, ESP_Health = true, ESP_Stamina = true,
     ESPBones = false, ESPCorpses = false, WorldESPMaxDistance = 2000,
     NightVision = false, NoBlur = false, NoSleepScreen = false,
+    UnlockCamera = false,
     -- Tools
     AutoClean = false,
     SaveDinoEnabled = false, SaveDinoMode = "Down", SaveDinoOffset = 70,
@@ -48,6 +49,9 @@ local LO = {
     ExposureCompensation = Lighting.ExposureCompensation,
     AtmoDensity = origAtmo and origAtmo.Density or 0.3,
     AtmoHaze = origAtmo and origAtmo.Haze or 0,
+    MaxZoom = LocalPlayer.CameraMaxZoomDistance,
+    MinZoom = LocalPlayer.CameraMinZoomDistance,
+    Occlusion = LocalPlayer.DevCameraOcclusionMode,
 }
 
 local Theme = {
@@ -59,9 +63,12 @@ local Theme = {
 }
 
 local HitboxSizes = { 10, 16, 22, 28, 35 }
--- Множители пропорционального Reach (сохраняют родную форму челюсти, головы, хвоста и ног)
 local ReachMultipliers = { 0.5, 1.3, 1.6, 2.0, 2.5, 3.2, 4.0 }
 local ReachLabels = { "0.5x (Уменьш.)", "1.3x (Форма)", "1.6x (Форма)", "2.0x (Форма)", "2.5x (Форма)", "3.2x (Форма)", "4.0x (Форма)" }
+
+-- Варианты прозрачности для Reach и Hitbox
+local TransValues = { 0.2, 0.5, 0.75, 0.9, 1.0 }
+local TransLabels = { "0.2 (Яркий)", "0.5 (Средний)", "0.75 (Слабый)", "0.9 (Почти невид.)", "1.0 (Невидимый)" }
 
 local PartPatterns = {
     Jaw = { "jaw", "mandible", "snout", "mouth", "bite", "muzzle", "beak", "fang", "teeth" },
@@ -119,9 +126,10 @@ function Utils.DeepClone(tbl, seen)
     return copy
 end
 
--- 3. Visuals (Полная поддержка Lighting + CurrentCamera + Atmosphere + PlayerGui)
+-- 3. Visuals & Unlock Camera
 local Visuals = {}
 local wasNightVision = false
+local wasUnlockCam = false
 
 local function ProcessPostEffects(container)
     if not container then return end
@@ -144,7 +152,29 @@ function Visuals.Init()
     Utils.Track(RunService.RenderStepped:Connect(function()
         if not State.Active then return end
 
-        -- 1. Night Vision (освещение + отключение ночного тумана Atmosphere)
+        -- 1. Unlock Camera (Отдаление камеры без ограничений + проход сквозь препятствия)
+        if State.UnlockCamera then
+            wasUnlockCam = true
+            LocalPlayer.CameraMaxZoomDistance = 100000
+            LocalPlayer.CameraMinZoomDistance = 0.5
+            LocalPlayer.DevCameraOcclusionMode = Enum.DevCameraOcclusionMode.Invisicam
+            local cam = Workspace.CurrentCamera
+            if cam and cam.CameraType == Enum.CameraType.Scriptable then
+                -- Если игра не в главном меню, удерживаем свободное вращение и зум
+                if LocalPlayer.Character then
+                    cam.CameraType = Enum.CameraType.Custom
+                end
+            end
+        elseif wasUnlockCam then
+            wasUnlockCam = false
+            pcall(function()
+                LocalPlayer.CameraMaxZoomDistance = LO.MaxZoom
+                LocalPlayer.CameraMinZoomDistance = LO.MinZoom
+                LocalPlayer.DevCameraOcclusionMode = LO.Occlusion
+            end)
+        end
+
+        -- 2. Night Vision
         if State.NightVision then
             wasNightVision = true
             Lighting.Ambient = Color3.fromRGB(230, 230, 230)
@@ -158,10 +188,10 @@ function Visuals.Init()
             if atmo then atmo.Density = 0; atmo.Haze = 0 end
         elseif wasNightVision then
             wasNightVision = false
-            Visuals.Restore()
+            Visuals.RestoreLighting()
         end
 
-        -- 2. No Blur & No Sleep Screen (и в Lighting, и в CurrentCamera)
+        -- 3. No Blur & No Sleep Screen
         if State.NoBlur or State.NoSleepScreen then
             ProcessPostEffects(Lighting)
             if Workspace.CurrentCamera then
@@ -169,7 +199,6 @@ function Visuals.Init()
             end
         end
 
-        -- 3. Скрытие темных экранов сна / усталости в PlayerGui
         if State.NoSleepScreen then
             local pg = LocalPlayer:FindFirstChild("PlayerGui")
             local cam = Workspace.CurrentCamera
@@ -191,7 +220,7 @@ function Visuals.Init()
     end))
 end
 
-function Visuals.Restore()
+function Visuals.RestoreLighting()
     pcall(function()
         Lighting.Ambient = LO.Ambient; Lighting.OutdoorAmbient = LO.OutdoorAmbient
         Lighting.Brightness = LO.Brightness; Lighting.GlobalShadows = LO.GlobalShadows
@@ -199,6 +228,15 @@ function Visuals.Restore()
         Lighting.ExposureCompensation = LO.ExposureCompensation
         local atmo = Lighting:FindFirstChildOfClass("Atmosphere")
         if atmo then atmo.Density = LO.AtmoDensity; atmo.Haze = LO.AtmoHaze end
+    end)
+end
+
+function Visuals.Restore()
+    Visuals.RestoreLighting()
+    pcall(function()
+        LocalPlayer.CameraMaxZoomDistance = LO.MaxZoom
+        LocalPlayer.CameraMinZoomDistance = LO.MinZoom
+        LocalPlayer.DevCameraOcclusionMode = LO.Occlusion
     end)
 end
 
@@ -476,7 +514,7 @@ function Combat.Init()
     task.spawn(function()
         while State.Active do
             pcall(function()
-                -- 1. Enemy Hitboxes (с сохранением пропорций части тела врага)
+                -- 1. Enemy Hitboxes
                 for model, groups in pairs(State.CachedModels) do
                     if model and model.Parent and not isLocal(model) then
                         local tCat = State.SelectedHitboxPart; local tSize = HitboxSizes[State.HitboxSizeLevel]
@@ -499,7 +537,7 @@ function Combat.Init()
                     end
                 end
 
-                -- 2. Пропорциональный Local Reach (повторяет точную форму челюсти, головы, хвоста и лап!)
+                -- 2. Пропорциональный Local Reach (повторяет форму челюсти, головы, хвоста и лап)
                 local myChar = LocalPlayer.Character
                 if myChar and myChar.Parent and myCharParts then
                     local mult = ReachMultipliers[State.ReachScaleLevel] or 2.0
@@ -519,11 +557,8 @@ function Combat.Init()
                                 local orig = State.LocalOriginalParts[part]
                                 if State.ReachEnabled and isSel then
                                     part.Massless = true; part.CanCollide = false; part.CustomPhysicalProperties = ZP; part.RootPriority = -127
-                                    -- Точное масштабирование по родным осям детали (сохраняет форму челюсти/хвоста, не делая куб)
                                     part.Size = orig.Size * mult
-                                    if orig.Mesh and orig.MeshScale then
-                                        orig.Mesh.Scale = orig.MeshScale * mult
-                                    end
+                                    if orig.Mesh and orig.MeshScale then orig.Mesh.Scale = orig.MeshScale * mult end
                                     part.Transparency = State.ReachTransparency; part.CanTouch = true; part.CanQuery = true
                                 else
                                     part.Size = orig.Size; part.Transparency = orig.Transparency
@@ -873,32 +908,43 @@ end
 
 local CombatPage = CreateTab("Combat"); local RenderPage = CreateTab("Render"); local ToolsPage = CreateTab("Tools")
 
--- Вкладка Combat: Пропорциональный Reach (повторяет форму частей тела) + Silent Aim + Enemy Hitbox
+-- Вкладка Combat: Пропорциональный Reach + Настройка прозрачности + Silent Aim + Enemy Hitbox
 CreateToggle(CombatPage, "Reach (Точная форма частей тела)", State.ReachEnabled, 1, function(v) State.ReachEnabled = v end)
 CreateCycleButton(CombatPage, "Масштаб формы Reach", ReachLabels, State.ReachScaleLevel, 2, function(_, idx) State.ReachScaleLevel = idx end)
-CreateToggle(CombatPage, "[Reach] Челюсть / Укус (Jaw)", State.ReachParts.Jaw, 3, function(v) State.ReachParts.Jaw = v end)
-CreateToggle(CombatPage, "[Reach] Голова (Head)", State.ReachParts.Head, 4, function(v) State.ReachParts.Head = v end)
-CreateToggle(CombatPage, "[Reach] Весь Хвост (Full Tail)", State.ReachParts.Tail, 5, function(v) State.ReachParts.Tail = v end)
-CreateToggle(CombatPage, "[Reach] Ноги и Лапы (Legs)", State.ReachParts.Leg, 6, function(v) State.ReachParts.Leg = v end)
-CreateToggle(CombatPage, "[Reach] Тело (Body)", State.ReachParts.Body, 7, function(v) State.ReachParts.Body = v end)
+CreateCycleButton(CombatPage, "Прозрачность Reach", TransLabels, State.ReachTransLevel, 3, function(_, idx)
+    State.ReachTransLevel = idx
+    State.ReachTransparency = TransValues[idx] or 0.75
+end)
+CreateToggle(CombatPage, "[Reach] Челюсть / Укус (Jaw)", State.ReachParts.Jaw, 4, function(v) State.ReachParts.Jaw = v end)
+CreateToggle(CombatPage, "[Reach] Голова (Head)", State.ReachParts.Head, 5, function(v) State.ReachParts.Head = v end)
+CreateToggle(CombatPage, "[Reach] Весь Хвост (Full Tail)", State.ReachParts.Tail, 6, function(v) State.ReachParts.Tail = v end)
+CreateToggle(CombatPage, "[Reach] Ноги и Лапы (Legs)", State.ReachParts.Leg, 7, function(v) State.ReachParts.Leg = v end)
+CreateToggle(CombatPage, "[Reach] Тело (Body)", State.ReachParts.Body, 8, function(v) State.ReachParts.Body = v end)
 
-CreateToggle(CombatPage, "Silent Aim", State.SilentAim, 8, function(v) State.SilentAim = v end)
-CreateCycleButton(CombatPage, "Цель Silent Aim", { "Head", "Jaw", "Body", "Tail", "Leg" }, 1, 9, function(opt) State.AimTargetPart = opt end)
-CreateToggle(CombatPage, "Enemy Hitbox Expander (Враги)", State.HitboxMaster, 10, function(v) State.HitboxMaster = v end)
-CreateCycleButton(CombatPage, "Часть тела Врага", { "Head", "Jaw", "Body", "Tail", "Leg" }, 1, 11, function(opt) State.SelectedHitboxPart = opt end)
-CreateCycleButton(CombatPage, "Размер Хитбокса Врага", { "1 (10)", "2 (16)", "3 (22)", "4 (28)", "5 (35)" }, State.HitboxSizeLevel, 12, function(_, idx) State.HitboxSizeLevel = idx end)
-CreateToggle(CombatPage, "No Attack CD", State.NoAttackCD, 13, function(v) State.NoAttackCD = v end)
+CreateToggle(CombatPage, "Silent Aim", State.SilentAim, 9, function(v) State.SilentAim = v end)
+CreateCycleButton(CombatPage, "Цель Silent Aim", { "Head", "Jaw", "Body", "Tail", "Leg" }, 1, 10, function(opt) State.AimTargetPart = opt end)
+CreateToggle(CombatPage, "Enemy Hitbox Expander (Враги)", State.HitboxMaster, 11, function(v) State.HitboxMaster = v end)
+CreateCycleButton(CombatPage, "Часть тела Врага", { "Head", "Jaw", "Body", "Tail", "Leg" }, 1, 12, function(opt) State.SelectedHitboxPart = opt end)
+CreateCycleButton(CombatPage, "Размер Хитбокса Врага", { "1 (10)", "2 (16)", "3 (22)", "4 (28)", "5 (35)" }, State.HitboxSizeLevel, 13, function(_, idx) State.HitboxSizeLevel = idx end)
+CreateCycleButton(CombatPage, "Прозрачность Хитбокса Врага", TransLabels, State.HitboxTransLevel, 14, function(_, idx)
+    State.HitboxTransLevel = idx
+    State.HitboxTransparency = TransValues[idx] or 0.75
+end)
+CreateToggle(CombatPage, "No Attack CD", State.NoAttackCD, 15, function(v) State.NoAttackCD = v end)
 
-CreateToggle(RenderPage, "ESP Игроков (Цифры в полосках)", State.ESPEnabled, 1, function(v) State.ESPEnabled = v end)
-CreateToggle(RenderPage, "Показывать Полоску HP", State.ESP_Health, 2, function(v) State.ESP_Health = v end)
-CreateToggle(RenderPage, "Показывать Полоску Стамины", State.ESP_Stamina, 3, function(v) State.ESP_Stamina = v end)
-CreateCycleButton(RenderPage, "Дистанция ESP Игроков", { 1000, 2000, 3500, 5000 }, 2, 4, function(val) State.ESPMaxDistance = val end)
-CreateToggle(RenderPage, "ESP Костей", State.ESPBones, 5, function(v) State.ESPBones = v; if v then ESPModule.ScanWorldItems() end end)
-CreateToggle(RenderPage, "ESP Еды / Трупов", State.ESPCorpses, 6, function(v) State.ESPCorpses = v; if v then ESPModule.ScanWorldItems() end end)
-CreateToggle(RenderPage, "Night Vision (Без тумана)", State.NightVision, 7, function(v) State.NightVision = v end)
-CreateToggle(RenderPage, "No Blur (Убрать размытие)", State.NoBlur, 8, function(v) State.NoBlur = v end)
-CreateToggle(RenderPage, "No Sleep Screen (Убрать темный экран)", State.NoSleepScreen, 9, function(v) State.NoSleepScreen = v end)
+-- Вкладка Render: ESP + Unlock Camera + Зрение
+CreateToggle(RenderPage, "Unlock Camera (Отдаление без лимита)", State.UnlockCamera, 1, function(v) State.UnlockCamera = v end)
+CreateToggle(RenderPage, "ESP Игроков (Цифры в полосках)", State.ESPEnabled, 2, function(v) State.ESPEnabled = v end)
+CreateToggle(RenderPage, "Показывать Полоску HP", State.ESP_Health, 3, function(v) State.ESP_Health = v end)
+CreateToggle(RenderPage, "Показывать Полоску Стамины", State.ESP_Stamina, 4, function(v) State.ESP_Stamina = v end)
+CreateCycleButton(RenderPage, "Дистанция ESP Игроков", { 1000, 2000, 3500, 5000 }, 2, 5, function(val) State.ESPMaxDistance = val end)
+CreateToggle(RenderPage, "ESP Костей", State.ESPBones, 6, function(v) State.ESPBones = v; if v then ESPModule.ScanWorldItems() end end)
+CreateToggle(RenderPage, "ESP Еды / Трупов", State.ESPCorpses, 7, function(v) State.ESPCorpses = v; if v then ESPModule.ScanWorldItems() end end)
+CreateToggle(RenderPage, "Night Vision (Без тумана)", State.NightVision, 8, function(v) State.NightVision = v end)
+CreateToggle(RenderPage, "No Blur (Убрать размытие)", State.NoBlur, 9, function(v) State.NoBlur = v end)
+CreateToggle(RenderPage, "No Sleep Screen (Убрать темный экран)", State.NoSleepScreen, 10, function(v) State.NoSleepScreen = v end)
 
+-- Вкладка Tools
 CreateToggle(ToolsPage, "Auto Clean (Вшитый пакет мытья)", State.AutoClean, 1, function(v)
     State.AutoClean = v
     if v then Utils.Notify("Auto Clean", "Пакетное мытье активировано!") end
@@ -911,7 +957,7 @@ local function MinimizeUI() if State.Minimized then return end State.Minimized =
 local function RestoreUI() if not State.Minimized then return end State.Minimized = false; MiniIcon.Visible = false; MainFrame.Visible = true end
 local function DeactivateScript()
     if not State.Active then return end
-    State.Active = false; State.SilentAim = false; State.HitboxMaster = false; State.ReachEnabled = false; State.ESPEnabled = false; State.ESPBones = false; State.ESPCorpses = false; State.NoAttackCD = false; State.AutoClean = false
+    State.Active = false; State.SilentAim = false; State.HitboxMaster = false; State.ReachEnabled = false; State.ESPEnabled = false; State.ESPBones = false; State.ESPCorpses = false; State.NoAttackCD = false; State.AutoClean = false; State.UnlockCamera = false
     Visuals.Restore(); SaveDino.ForceReset(); Combat.RestoreAll(); ESPModule.Cleanup()
     for _, conn in ipairs(State.Connections) do pcall(function() conn:Disconnect() end) end; table.clear(State.Connections)
     pcall(function() ScreenGui:Destroy() end); Env.PriorUI_Cleanup = nil; Utils.Notify("Prior Extinction", "Скрипт выгружен.")
