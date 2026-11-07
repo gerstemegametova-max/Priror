@@ -1,5 +1,5 @@
--- Prior Extinction // Ultimate Mobile (Fixed NoSleepScreen + Persistent Reach & Hitbox + Deep SilentAim + Species ESP)
-print("[PE] Запуск полной исправленной версии...")
+-- Prior Extinction // Ultimate Mobile (Multi-Part Enemy Hitbox + Neck Category + Proportional Reach + NoSleepScreen + Species ESP)
+print("[PE] Запуск полной версии с мульти-выбором Hitbox и категорией Шея...")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -18,14 +18,33 @@ if Env.PriorUI_Cleanup then pcall(Env.PriorUI_Cleanup) end
 local State = {
     Active = true, Minimized = false, Connections = {}, OriginalParts = {}, LocalOriginalParts = {}, CachedModels = {},
     SilentAim = false, AimTargetPart = "Head",
-    HitboxMaster = false, HitboxTransparency = 0.75, HitboxTransLevel = 3, HitboxSizeLevel = 3, SelectedHitboxPart = "Head",
+    -- Enemy Hitbox Expander (теперь с мульти-выбором и Шеей!)
+    HitboxMaster = false, HitboxTransparency = 0.75, HitboxTransLevel = 3, HitboxSizeLevel = 3,
+    EnemyHitboxParts = {
+        Head = true,
+        Neck = true,
+        Jaw = false,
+        Body = false,
+        Tail = false,
+        Leg = false,
+    },
     NoAttackCD = false,
+    -- Local Reach (тоже с Шеей и мульти-выбором)
     ReachEnabled = false, ReachScaleLevel = 3, ReachTransparency = 0.75, ReachTransLevel = 3,
-    ReachParts = { Jaw = true, Head = true, Tail = false, Leg = false, Body = false },
+    ReachParts = {
+        Jaw = true,
+        Head = true,
+        Neck = false,
+        Tail = false,
+        Leg = false,
+        Body = false,
+    },
+    -- Render & Camera
     ESPEnabled = false, ESPMaxDistance = 2000, ESP_Health = true, ESP_Stamina = true, ESP_Species = true,
     ESPBones = false, ESPCorpses = false, WorldESPMaxDistance = 2000,
     NightVision = false, NoBlur = false, NoSleepScreen = false,
     UnlockCamera = false,
+    -- Tools
     AutoClean = false,
     SaveDinoEnabled = false, SaveDinoMode = "Down", SaveDinoOffset = 70,
     SaveDinoOriginalCFrame = nil, SaveDinoTargetCFrame = nil, SaveDinoCurrentCFrame = nil,
@@ -66,9 +85,11 @@ local ReachLabels = { "0.5x (Уменьш.)", "14м (Форма)", "22м (Фор
 local TransValues = { 0.2, 0.5, 0.75, 0.9, 1.0 }
 local TransLabels = { "0.2 (Яркий)", "0.5 (Средний)", "0.75 (Слабый)", "0.9 (Почти невид.)", "1.0 (Невидимый)" }
 
+-- Добавлена полноценная категория Neck (все сегменты шеи Neck1, Neck2, Throat и т.д.)
 local PartPatterns = {
     Jaw = { "jaw", "mandible", "snout", "mouth", "bite", "muzzle", "beak", "fang", "teeth" },
-    Head = { "head", "skull", "cranium", "neckhead", "horn", "crest", "frill", "throat" },
+    Head = { "head", "skull", "cranium", "horn", "crest", "frill" },
+    Neck = { "neck", "throat", "cervical", "gullet" },
     Tail = { "tail", "thago", "club", "rattle", "spike", "fluke" },
     Leg = { "leg", "thigh", "calf", "shin", "foot", "ankle", "claw", "arm", "hand", "forelimb", "toe", "wing", "talon" },
     Body = { "chest", "ribcage", "abdomen", "bodyhitbox", "hitboxbody", "upperbody", "spine", "torso", "body", "pelvis", "hip", "back", "stomach" }
@@ -122,7 +143,7 @@ function Utils.DeepClone(tbl, seen)
     return copy
 end
 
--- 3. Visuals & Unlock Camera (Исправленный No Sleep Screen с кэшем шторок сна)
+-- 3. Visuals & Unlock Camera
 local Visuals = {}
 local wasNightVision = false
 local wasUnlockCam = false
@@ -418,14 +439,15 @@ function SaveDino.Init()
     end))
 end
 
--- 6. Combat (Исправленный классификатор частей + Удержание 30 Гц + Глубокий Silent Aim)
+-- 6. Combat (Мульти-выбор Enemy Hitbox + Шея Neck + Reach + Глубокий Silent Aim)
 local Combat = {}
 local ZP = PhysicalProperties.new(0.0001, 0, 0, 0, 0)
 local CachedLocalGroups = nil
 
 local function matchCat(partName, fullTail)
     local l = string.lower(partName)
-    for _, c in ipairs({ "Jaw", "Head", "Tail", "Leg", "Body" }) do
+    -- Проверяем Neck перед Head, чтобы NeckHead и сегменты шеи попадали в Neck
+    for _, c in ipairs({ "Jaw", "Neck", "Head", "Tail", "Leg", "Body" }) do
         for _, p in ipairs(PartPatterns[c]) do
             if string.find(l, p, 1, true) then
                 if c == "Tail" and not fullTail then
@@ -466,7 +488,7 @@ local function findPart(model, cat)
             return d
         end
     end
-    if cat == "Jaw" and c and c.Head and c.Head[1] then return c.Head[1] end
+    if (cat == "Jaw" or cat == "Neck") and c and c.Head and c.Head[1] then return c.Head[1] end
     if c and c.Body and c.Body[1] then return c.Body[1] end
     return model:FindFirstChild("Head", true)
 end
@@ -484,11 +506,11 @@ local function getEnemy(part)
 end
 
 function Combat.ScanModel(model, isSelf)
-    local cats = { Head = {}, Jaw = {}, Body = {}, Tail = {}, Leg = {} }
-    local added = { Head = {}, Jaw = {}, Body = {}, Tail = {}, Leg = {} }
+    local cats = { Head = {}, Neck = {}, Jaw = {}, Body = {}, Tail = {}, Leg = {} }
+    local added = { Head = {}, Neck = {}, Jaw = {}, Body = {}, Tail = {}, Leg = {} }
 
     local function addUnique(cat, part)
-        if not added[cat][part] then
+        if cats[cat] and not added[cat][part] then
             added[cat][part] = true
             table.insert(cats[cat], part)
         end
@@ -507,10 +529,14 @@ function Combat.ScanModel(model, isSelf)
             end
         end
 
+        -- Фолбэки, если у конкретного динозавра в модели объединены челюсть/голова/шея
         if #cats.Jaw == 0 and #cats.Head > 0 then
             for _, hp in ipairs(cats.Head) do addUnique("Jaw", hp) end
         elseif #cats.Head == 0 and #cats.Jaw > 0 then
             for _, jp in ipairs(cats.Jaw) do addUnique("Head", jp) end
+        end
+        if #cats.Neck == 0 and #cats.Head > 0 then
+            for _, hp in ipairs(cats.Head) do addUnique("Neck", hp) end
         end
 
         if #cats.Body == 0 then
@@ -671,15 +697,19 @@ function Combat.Init()
         if (now - lastApply) < 0.03 then return end
         lastApply = now
 
+        -- 1. Вражеские Хитбоксы (Мульти-выбор: Голова, Шея, Челюсть, Тело, Хвост, Ноги)
         if State.HitboxMaster or next(State.OriginalParts) ~= nil then
-            local tCat = State.SelectedHitboxPart
             local tSize = HitboxSizes[State.HitboxSizeLevel] or 25
             for model, groups in pairs(State.CachedModels) do
                 if model and model.Parent and not isLocal(model) then
                     local activeMap = {}
-                    if State.HitboxMaster and groups[tCat] then
-                        for idx, part in ipairs(groups[tCat]) do
-                            if idx <= 6 then activeMap[part] = true end
+                    if State.HitboxMaster then
+                        for cat, parts in pairs(groups) do
+                            if State.EnemyHitboxParts[cat] == true then
+                                for _, part in ipairs(parts) do
+                                    activeMap[part] = true
+                                end
+                            end
                         end
                     end
 
@@ -722,6 +752,7 @@ function Combat.Init()
             end
         end
 
+        -- 2. Локальный Reach (Мульти-выбор + Шея)
         local myChar = LocalPlayer.Character
         if myChar and myChar.Parent and CachedLocalGroups and (State.ReachEnabled or next(State.LocalOriginalParts) ~= nil) then
             local targetRange = ReachRanges[State.ReachScaleLevel] or 22
@@ -1255,7 +1286,7 @@ end
 
 local CombatPage = CreateTab("Combat"); local RenderPage = CreateTab("Render"); local ToolsPage = CreateTab("Tools")
 
--- Вкладка Combat
+-- Вкладка Combat: Reach (Мульти-выбор + Шея)
 CreateToggle(CombatPage, "Reach (Дальность + Форма частей тела)", State.ReachEnabled, 1, function(v) State.ReachEnabled = v end)
 CreateCycleButton(CombatPage, "Дистанция / Форма Reach", ReachLabels, State.ReachScaleLevel, 2, function(_, idx) State.ReachScaleLevel = idx end)
 CreateCycleButton(CombatPage, "Прозрачность Reach", TransLabels, State.ReachTransLevel, 3, function(_, idx)
@@ -1264,20 +1295,29 @@ CreateCycleButton(CombatPage, "Прозрачность Reach", TransLabels, Sta
 end)
 CreateToggle(CombatPage, "[Reach] Челюсть / Укус (Jaw)", State.ReachParts.Jaw, 4, function(v) State.ReachParts.Jaw = v end)
 CreateToggle(CombatPage, "[Reach] Голова (Head)", State.ReachParts.Head, 5, function(v) State.ReachParts.Head = v end)
-CreateToggle(CombatPage, "[Reach] Весь Хвост (Full Tail)", State.ReachParts.Tail, 6, function(v) State.ReachParts.Tail = v end)
-CreateToggle(CombatPage, "[Reach] Ноги и Лапы (Legs)", State.ReachParts.Leg, 7, function(v) State.ReachParts.Leg = v end)
-CreateToggle(CombatPage, "[Reach] Тело (Body)", State.ReachParts.Body, 8, function(v) State.ReachParts.Body = v end)
+CreateToggle(CombatPage, "[Reach] Шея (Neck)", State.ReachParts.Neck, 6, function(v) State.ReachParts.Neck = v end)
+CreateToggle(CombatPage, "[Reach] Весь Хвост (Full Tail)", State.ReachParts.Tail, 7, function(v) State.ReachParts.Tail = v end)
+CreateToggle(CombatPage, "[Reach] Ноги и Лапы (Legs)", State.ReachParts.Leg, 8, function(v) State.ReachParts.Leg = v end)
+CreateToggle(CombatPage, "[Reach] Тело (Body)", State.ReachParts.Body, 9, function(v) State.ReachParts.Body = v end)
 
-CreateToggle(CombatPage, "Silent Aim", State.SilentAim, 9, function(v) State.SilentAim = v end)
-CreateCycleButton(CombatPage, "Цель Silent Aim", { "Head", "Jaw", "Body", "Tail", "Leg" }, 1, 10, function(opt) State.AimTargetPart = opt end)
-CreateToggle(CombatPage, "Enemy Hitbox Expander (Враги)", State.HitboxMaster, 11, function(v) State.HitboxMaster = v end)
-CreateCycleButton(CombatPage, "Часть тела Врага", { "Head", "Jaw", "Body", "Tail", "Leg" }, 1, 12, function(opt) State.SelectedHitboxPart = opt end)
+-- Silent Aim (Тоже с выбором Шеи)
+CreateToggle(CombatPage, "Silent Aim", State.SilentAim, 10, function(v) State.SilentAim = v end)
+CreateCycleButton(CombatPage, "Цель Silent Aim", { "Head", "Neck", "Jaw", "Body", "Tail", "Leg" }, 1, 11, function(opt) State.AimTargetPart = opt end)
+
+-- Enemy Hitbox Expander (Теперь с мульти-выбором и Шеей!)
+CreateToggle(CombatPage, "Enemy Hitbox Expander (Враги)", State.HitboxMaster, 12, function(v) State.HitboxMaster = v end)
 CreateCycleButton(CombatPage, "Размер Хитбокса Врага", { "1 (12)", "2 (18)", "3 (25)", "4 (32)", "5 (42)" }, State.HitboxSizeLevel, 13, function(_, idx) State.HitboxSizeLevel = idx end)
 CreateCycleButton(CombatPage, "Прозрачность Хитбокса Врага", TransLabels, State.HitboxTransLevel, 14, function(_, idx)
     State.HitboxTransLevel = idx
     State.HitboxTransparency = TransValues[idx] or 0.75
 end)
-CreateToggle(CombatPage, "No Attack CD", State.NoAttackCD, 15, function(v) State.NoAttackCD = v end)
+CreateToggle(CombatPage, "[Hitbox Врага] Голова (Head)", State.EnemyHitboxParts.Head, 15, function(v) State.EnemyHitboxParts.Head = v end)
+CreateToggle(CombatPage, "[Hitbox Врага] Шея (Neck)", State.EnemyHitboxParts.Neck, 16, function(v) State.EnemyHitboxParts.Neck = v end)
+CreateToggle(CombatPage, "[Hitbox Врага] Челюсть (Jaw)", State.EnemyHitboxParts.Jaw, 17, function(v) State.EnemyHitboxParts.Jaw = v end)
+CreateToggle(CombatPage, "[Hitbox Врага] Тело / Торс (Body)", State.EnemyHitboxParts.Body, 18, function(v) State.EnemyHitboxParts.Body = v end)
+CreateToggle(CombatPage, "[Hitbox Врага] Хвост (Tail)", State.EnemyHitboxParts.Tail, 19, function(v) State.EnemyHitboxParts.Tail = v end)
+CreateToggle(CombatPage, "[Hitbox Врага] Ноги / Лапы (Legs)", State.EnemyHitboxParts.Leg, 20, function(v) State.EnemyHitboxParts.Leg = v end)
+CreateToggle(CombatPage, "No Attack CD", State.NoAttackCD, 21, function(v) State.NoAttackCD = v end)
 
 -- Вкладка Render
 CreateToggle(RenderPage, "Unlock Camera (Отдаление без лимита)", State.UnlockCamera, 1, function(v) State.UnlockCamera = v end)
