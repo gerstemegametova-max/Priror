@@ -1,5 +1,5 @@
--- Prior Extinction // Ultimate Compact (Fixed Proportional Reach + Dino Species ESP + Unlock Camera + AutoClean)
-print("[PE] Запуск обновленного скрипта...")
+-- Prior Extinction // Mobile-Optimized Ultimate (Zero-Lag Cache + Fixed Species ESP + Proportional Reach + Unlock Camera)
+print("[PE] Запуск мобильной оптимизированной версии...")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -20,7 +20,7 @@ local State = {
     SilentAim = false, AimTargetPart = "Head",
     HitboxMaster = false, HitboxTransparency = 0.75, HitboxTransLevel = 3, HitboxSizeLevel = 3, SelectedHitboxPart = "Head",
     NoAttackCD = false,
-    -- Исправленный пропорциональный Reach (сохраняет форму + дает реальную дальность укуса)
+    -- Пропорциональный Reach + настраиваемая прозрачность
     ReachEnabled = false, ReachScaleLevel = 3, ReachTransparency = 0.75, ReachTransLevel = 3,
     ReachParts = { Jaw = true, Head = true, Tail = false, Leg = false, Body = false },
     -- Render & Camera
@@ -63,7 +63,6 @@ local Theme = {
 }
 
 local HitboxSizes = { 10, 16, 22, 28, 35 }
--- Отрицательное значение = уменьшение (0.5x), положительные = целевая длина самой длинной грани с сохранением всех пропорций формы
 local ReachRanges = { -0.5, 12, 20, 28, 38, 52 }
 local ReachLabels = { "0.5x (Уменьш.)", "12м (Форма)", "20м (Форма)", "28м (Форма)", "38м (Форма)", "52м (Форма)" }
 
@@ -126,7 +125,7 @@ function Utils.DeepClone(tbl, seen)
     return copy
 end
 
--- 3. Visuals & Unlock Camera
+-- 3. Visuals & Unlock Camera (Оптимизировано под телефон: без тяжелых покадровых циклов)
 local Visuals = {}
 local wasNightVision = false
 local wasUnlockCam = false
@@ -149,69 +148,50 @@ local function ProcessPostEffects(container)
 end
 
 function Visuals.Init()
-    Utils.Track(RunService.RenderStepped:Connect(function()
-        if not State.Active then return end
-
-        if State.UnlockCamera then
-            wasUnlockCam = true
-            LocalPlayer.CameraMaxZoomDistance = 100000
-            LocalPlayer.CameraMinZoomDistance = 0.5
-            LocalPlayer.DevCameraOcclusionMode = Enum.DevCameraOcclusionMode.Invisicam
-            local cam = Workspace.CurrentCamera
-            if cam and cam.CameraType == Enum.CameraType.Scriptable and LocalPlayer.Character then
-                cam.CameraType = Enum.CameraType.Custom
-            end
-        elseif wasUnlockCam then
-            wasUnlockCam = false
+    task.spawn(function()
+        while State.Active do
             pcall(function()
-                LocalPlayer.CameraMaxZoomDistance = LO.MaxZoom
-                LocalPlayer.CameraMinZoomDistance = LO.MinZoom
-                LocalPlayer.DevCameraOcclusionMode = LO.Occlusion
-            end)
-        end
+                -- 1. Unlock Camera
+                if State.UnlockCamera then
+                    wasUnlockCam = true
+                    LocalPlayer.CameraMaxZoomDistance = 100000
+                    LocalPlayer.CameraMinZoomDistance = 0.5
+                    LocalPlayer.DevCameraOcclusionMode = Enum.DevCameraOcclusionMode.Invisicam
+                elseif wasUnlockCam then
+                    wasUnlockCam = false
+                    LocalPlayer.CameraMaxZoomDistance = LO.MaxZoom
+                    LocalPlayer.CameraMinZoomDistance = LO.MinZoom
+                    LocalPlayer.DevCameraOcclusionMode = LO.Occlusion
+                end
 
-        if State.NightVision then
-            wasNightVision = true
-            Lighting.Ambient = Color3.fromRGB(230, 230, 230)
-            Lighting.OutdoorAmbient = Color3.fromRGB(230, 230, 230)
-            Lighting.Brightness = 3
-            Lighting.ClockTime = 14
-            Lighting.FogEnd = 100000
-            Lighting.GlobalShadows = false
-            Lighting.ExposureCompensation = 0.5
-            local atmo = Lighting:FindFirstChildOfClass("Atmosphere")
-            if atmo then atmo.Density = 0; atmo.Haze = 0 end
-        elseif wasNightVision then
-            wasNightVision = false
-            Visuals.RestoreLighting()
-        end
+                -- 2. Night Vision
+                if State.NightVision then
+                    wasNightVision = true
+                    Lighting.Ambient = Color3.fromRGB(230, 230, 230)
+                    Lighting.OutdoorAmbient = Color3.fromRGB(230, 230, 230)
+                    Lighting.Brightness = 3
+                    Lighting.ClockTime = 14
+                    Lighting.FogEnd = 100000
+                    Lighting.GlobalShadows = false
+                    Lighting.ExposureCompensation = 0.5
+                    local atmo = Lighting:FindFirstChildOfClass("Atmosphere")
+                    if atmo then atmo.Density = 0; atmo.Haze = 0 end
+                elseif wasNightVision then
+                    wasNightVision = false
+                    Visuals.RestoreLighting()
+                end
 
-        if State.NoBlur or State.NoSleepScreen then
-            ProcessPostEffects(Lighting)
-            if Workspace.CurrentCamera then
-                ProcessPostEffects(Workspace.CurrentCamera)
-            end
-        end
-
-        if State.NoSleepScreen then
-            local pg = LocalPlayer:FindFirstChild("PlayerGui")
-            local cam = Workspace.CurrentCamera
-            if pg and cam then
-                local vp = cam.ViewportSize
-                for _, g in ipairs(pg:GetDescendants()) do
-                    if (g:IsA("Frame") or g:IsA("ImageLabel")) and g.Visible then
-                        if g.AbsoluteSize.X >= vp.X * 0.85 and g.AbsoluteSize.Y >= vp.Y * 0.85 then
-                            local col = g:IsA("ImageLabel") and g.ImageColor3 or g.BackgroundColor3
-                            if col.R < 0.15 and col.G < 0.15 and col.B < 0.15 then
-                                local tr = g:IsA("ImageLabel") and g.ImageTransparency or g.BackgroundTransparency
-                                if tr < 0.95 then g.Visible = false end
-                            end
-                        end
+                -- 3. No Blur & No Sleep Screen (без тяжелого GetDescendants по всему PlayerGui)
+                if State.NoBlur or State.NoSleepScreen then
+                    ProcessPostEffects(Lighting)
+                    if Workspace.CurrentCamera then
+                        ProcessPostEffects(Workspace.CurrentCamera)
                     end
                 end
-            end
+            end)
+            task.wait(0.25)
         end
-    end))
+    end)
 end
 
 function Visuals.RestoreLighting()
@@ -262,7 +242,7 @@ function Survival.Init()
                     end
                 end)
             end
-            task.wait(1.0)
+            task.wait(1.2)
         end
     end)
 end
@@ -362,9 +342,12 @@ function SaveDino.Init()
     end))
 end
 
--- 6. Combat & Исправленный пропорциональный Reach
+-- 6. Combat & Кэшированный Пропорциональный Reach (0 лагов на телефоне!)
 local Combat = {}
 local ZP = PhysicalProperties.new(0.0001, 0, 0, 0, 0)
+local CachedLocalGroups = nil
+local LastLocalScanChar = nil
+local LastLocalPartCount = 0
 
 local function matchCat(part, fullTail)
     local nameStr = string.lower(part.Name)
@@ -396,7 +379,6 @@ end
 local function findPart(model, cat)
     local c = State.CachedModels[model]
     if c and c[cat] then for _, p in ipairs(c[cat]) do if p and p.Parent then return p end end end
-    for _, d in ipairs(model:GetDescendants()) do if d:IsA("BasePart") and matchCat(d, false) == cat then return d end end
     return nil
 end
 
@@ -421,12 +403,10 @@ function Combat.ScanModel(model, isSelf)
                 if c and cats[c] then
                     table.insert(cats[c], d)
                 elseif isSelf and d:FindFirstChildOfClass("TouchTransmitter") then
-                    -- Если на детали висит TouchInterest (хитбокс атаки), добавляем в Jaw
                     table.insert(cats.Jaw, d)
                 end
             end
         end
-        -- Если у динозавра нет отдельной детали Jaw, дублируем Head в Jaw, чтобы выбор Челюсти всегда работал
         if isSelf and #cats.Jaw == 0 and #cats.Head > 0 then
             for _, hp in ipairs(cats.Head) do table.insert(cats.Jaw, hp) end
         end
@@ -442,7 +422,6 @@ function Combat.ScanModel(model, isSelf)
     return cats
 end
 
--- Вычисляет новый размер с сохранением 100% оригинальных пропорций детали (не превращая в куб!)
 local function GetProportionalSize(origSize, targetRange)
     if targetRange < 0 then
         return origSize * math.abs(targetRange)
@@ -515,39 +494,59 @@ if not Env.PriorUI_HookInstalled then
 end
 
 function Combat.Init()
+    -- Медленный фоновый кэш моделей (раз в 2 секунды, только когда включены боевые функции)
     task.spawn(function()
         while State.Active do
             pcall(function()
-                local nc = {}
-                for _, p in ipairs(Players:GetPlayers()) do
-                    if p ~= LocalPlayer and p.Character then nc[p.Character] = Combat.ScanModel(p.Character, false) end
+                if State.HitboxMaster or State.SilentAim then
+                    local nc = {}
+                    for _, p in ipairs(Players:GetPlayers()) do
+                        if p ~= LocalPlayer and p.Character then
+                            nc[p.Character] = State.CachedModels[p.Character] or Combat.ScanModel(p.Character, false)
+                        end
+                    end
+                    State.CachedModels = nc
                 end
-                State.CachedModels = nc
+
+                local myChar = LocalPlayer.Character
+                if myChar then
+                    local childCount = #myChar:GetChildren()
+                    if myChar ~= LastLocalScanChar or math.abs(childCount - LastLocalPartCount) > 2 or not CachedLocalGroups then
+                        LastLocalScanChar = myChar
+                        LastLocalPartCount = childCount
+                        CachedLocalGroups = Combat.ScanModel(myChar, true)
+                    end
+                else
+                    CachedLocalGroups = nil
+                end
             end)
-            task.wait(1.2)
+            task.wait(2.0)
         end
     end)
 
+    -- Быстрый цикл применения размеров по готовому кэшу (0 вызовов GetDescendants!)
     task.spawn(function()
         while State.Active do
             pcall(function()
-                -- 1. Enemy Hitboxes (с сохранением формы части тела врага)
-                for model, groups in pairs(State.CachedModels) do
-                    if model and model.Parent and not isLocal(model) then
-                        local tCat = State.SelectedHitboxPart; local tSize = HitboxSizes[State.HitboxSizeLevel]
-                        for cat, parts in pairs(groups) do
-                            for idx, part in ipairs(parts) do
-                                if part and part.Parent and not isCritRoot(model, part) then
-                                    if not State.OriginalParts[part] then
-                                        State.OriginalParts[part] = { Size = part.Size, Transparency = part.Transparency, CanCollide = part.CanCollide, CanQuery = part.CanQuery, CanTouch = part.CanTouch, Massless = part.Massless, CustomPhysicalProperties = part.CustomPhysicalProperties, RootPriority = part.RootPriority }
-                                    end
-                                    local o = State.OriginalParts[part]
-                                    if State.HitboxMaster and cat == tCat and idx <= 2 then
-                                        part.Massless = true; part.CanCollide = false; part.CustomPhysicalProperties = ZP; part.RootPriority = -127
-                                        part.Size = GetProportionalSize(o.Size, tSize)
-                                        part.Transparency = State.HitboxTransparency; part.CanTouch = true; part.CanQuery = true
-                                    else
-                                        part.Size = o.Size; part.Transparency = o.Transparency; part.CanCollide = o.CanCollide; part.Massless = o.Massless; part.CanTouch = o.CanTouch; part.CanQuery = o.CanQuery; part.CustomPhysicalProperties = o.CustomPhysicalProperties; part.RootPriority = o.RootPriority
+                -- 1. Enemy Hitboxes
+                if State.HitboxMaster or next(State.OriginalParts) ~= nil then
+                    for model, groups in pairs(State.CachedModels) do
+                        if model and model.Parent and not isLocal(model) then
+                            local tCat = State.SelectedHitboxPart; local tSize = HitboxSizes[State.HitboxSizeLevel]
+                            for cat, parts in pairs(groups) do
+                                for idx, part in ipairs(parts) do
+                                    if part and part.Parent and not isCritRoot(model, part) then
+                                        if not State.OriginalParts[part] then
+                                            State.OriginalParts[part] = { Size = part.Size, Transparency = part.Transparency, CanCollide = part.CanCollide, CanQuery = part.CanQuery, CanTouch = part.CanTouch, Massless = part.Massless, CustomPhysicalProperties = part.CustomPhysicalProperties, RootPriority = part.RootPriority }
+                                        end
+                                        local o = State.OriginalParts[part]
+                                        if State.HitboxMaster and cat == tCat and idx <= 2 then
+                                            part.Massless = true; part.CanCollide = false; part.CustomPhysicalProperties = ZP; part.RootPriority = -127
+                                            part.Size = GetProportionalSize(o.Size, tSize)
+                                            part.Transparency = State.HitboxTransparency; part.CanTouch = true; part.CanQuery = true
+                                        else
+                                            part.Size = o.Size; part.Transparency = o.Transparency; part.CanCollide = o.CanCollide; part.Massless = o.Massless; part.CanTouch = o.CanTouch; part.CanQuery = o.CanQuery; part.CustomPhysicalProperties = o.CustomPhysicalProperties; part.RootPriority = o.RootPriority
+                                        end
                                     end
                                 end
                             end
@@ -555,14 +554,13 @@ function Combat.Init()
                     end
                 end
 
-                -- 2. Динамический пропорциональный Local Reach (сохраняет форму челюсти/головы/хвоста/ног + дает реальную дистанцию)
+                -- 2. Local Reach (по готовому кэшу CachedLocalGroups)
                 local myChar = LocalPlayer.Character
-                if myChar and myChar.Parent then
-                    local myGroups = Combat.ScanModel(myChar, true)
+                if myChar and myChar.Parent and CachedLocalGroups and (State.ReachEnabled or next(State.LocalOriginalParts) ~= nil) then
                     local targetRange = ReachRanges[State.ReachScaleLevel] or 20
                     local appliedThisTick = {}
 
-                    for cat, parts in pairs(myGroups) do
+                    for cat, parts in pairs(CachedLocalGroups) do
                         local isSel = State.ReachParts[cat] == true
                         for _, part in ipairs(parts) do
                             if part and part.Parent and not isCritRoot(myChar, part) then
@@ -590,7 +588,7 @@ function Combat.Init()
                     end
                 end
             end)
-            task.wait(0.2)
+            task.wait(0.25)
         end
     end)
 
@@ -613,7 +611,7 @@ function Combat.Init()
                     end
                 end)
             end
-            task.wait(0.08)
+            task.wait(0.1)
         end
     end)
 end
@@ -632,89 +630,142 @@ function Combat.RestoreAll()
     table.clear(State.OriginalParts); table.clear(State.LocalOriginalParts)
 end
 
--- 7. ESP (С отображением названия Динозавра над ником игрока)
+-- 7. ESP (Точное определение названия динозавра + Кэш для телефонов)
 local ESPModule = {}
-local espGuis, worldGuis, trackedWorld, stamTrack = {}, {}, {}, {}
+local espGuis, worldGuis, trackedWorld, stamTrack, headCache, speciesCache = {}, {}, {}, {}, {}, {}
 local worldScanDone, worldScanning = false, false
 local ESPFolder = Instance.new("Folder"); ESPFolder.Name = "PE_ESP_Container"; pcall(function() ESPFolder.Parent = Utils.GuiParent() end)
 
 local function getESPHead(c)
     if not c or not c:IsA("Model") then return nil end
+    if headCache[c] and headCache[c].Parent then return headCache[c] end
     local h = c:FindFirstChild("Head", true)
-    if h and h:IsA("BasePart") then return h end
-    for _, d in ipairs(c:GetDescendants()) do if d:IsA("BasePart") and string.find(string.lower(d.Name), "head", 1, true) then return d end end
-    return c.PrimaryPart or c:FindFirstChildWhichIsA("BasePart", true)
+    if h and h:IsA("BasePart") then headCache[c] = h; return h end
+    for _, d in ipairs(c:GetDescendants()) do
+        if d:IsA("BasePart") and string.find(string.lower(d.Name), "head", 1, true) then
+            headCache[c] = d; return d
+        end
+    end
+    local fb = c.PrimaryPart or c:FindFirstChildWhichIsA("BasePart", true)
+    headCache[c] = fb
+    return fb
 end
+
 local function getDinoRoot(c)
     if not c then return nil end
-    return c.PrimaryPart or c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("RootPart") or c:FindFirstChildWhichIsA("BasePart", true)
+    return c.PrimaryPart or c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("RootPart") or getESPHead(c)
 end
+
 local function ExtractNumber(v)
     if type(v) == "number" then return v end
     if type(v) == "string" then return tonumber(v) or tonumber(string.match(v, "[-]?%d+%.?%d*")) end
     return nil
 end
 
--- Определяет название динозавра, за которого играет игрок
-local SpeciesAttrKeys = { "dinosaur", "species", "dino", "creature", "animal", "character", "class", "SelectedDinosaur", "CurrentDino" }
-local function GetDinoSpeciesName(player, model)
-    if not model then return "Unknown" end
+-- Фильтр мусорных технических слов, чтобы в ESP никогда не попадали Rig, Male, Default, Hitbox и т.д.
+local InvalidSpeciesWords = {
+    ["rig"] = true, ["model"] = true, ["default"] = true, ["male"] = true, ["female"] = true,
+    ["adult"] = true, ["juvenile"] = true, ["baby"] = true, ["subadult"] = true, ["hatchling"] = true,
+    ["hitboxes"] = true, ["hitbox"] = true, ["parts"] = true, ["character"] = true, ["humanoid"] = true,
+    ["custom"] = true, ["none"] = true, ["null"] = true, ["true"] = true, ["false"] = true,
+    ["alive"] = true, ["dead"] = true, ["herbivore"] = true, ["carnivore"] = true, ["omnivore"] = true,
+}
 
-    -- 1. Проверяем атрибуты на Игроке и Модели
-    for _, inst in ipairs({ player, model, model:FindFirstChildOfClass("Humanoid") }) do
-        if inst then
+local function CleanSpeciesString(raw, player)
+    if type(raw) ~= "string" then return nil end
+    local s = string.gsub(raw, "^%s+", ""):gsub("%s+$", "")
+    if #s < 3 or #s > 32 then return nil end
+    if s == player.Name or s == player.DisplayName then return nil end
+    if tonumber(s) then return nil end
+
+    -- Если строка вида "PlayerName_Torvosaurus" или "Torvosaurus_Adult", убираем имя игрока и возраст
+    s = string.gsub(s, player.Name, "")
+    s = string.gsub(s, "^[%s_%-]+", ""):gsub("[%s_%-]+$", "")
+
+    local low = string.lower(s)
+    if InvalidSpeciesWords[low] then return nil end
+    if string.find(low, "hitbox", 1, true) or string.find(low, "rig", 1, true) or string.find(low, "effect", 1, true) or string.find(low, " saddle", 1, true) or string.find(low, "anim", 1, true) then
+        return nil
+    end
+    return s
+end
+
+local ExactSpeciesKeys = {
+    "dinosaur", "species", "dinoname", "dinosaur_name", "speciesname", "currentdino",
+    "selecteddino", "selecteddinosaur", "creature", "creaturename", "playable", "dino"
+}
+
+local function GetDinoSpeciesName(player, model)
+    if not model then return nil end
+    if speciesCache[model] and (os.clock() - speciesCache[model].time) < 4.0 then
+        return speciesCache[model].name
+    end
+
+    local foundName = nil
+
+    -- 1. Точный поиск в атрибутах Player и Character
+    for _, inst in ipairs({ model, player, model:FindFirstChildOfClass("Humanoid") }) do
+        if inst and not foundName then
             local ok, attrs = pcall(function() return inst:GetAttributes() end)
             if ok and type(attrs) == "table" then
-                for k, v in pairs(attrs) do
-                    if type(v) == "string" and #v > 2 and v ~= player.Name and v ~= player.DisplayName then
-                        local kn = string.lower(k)
-                        for _, sk in ipairs(SpeciesAttrKeys) do
-                            if string.find(kn, string.lower(sk), 1, true) then
-                                return v
+                for _, targetKey in ipairs(ExactSpeciesKeys) do
+                    for k, v in pairs(attrs) do
+                        if string.lower(k) == targetKey or string.find(string.lower(k), targetKey, 1, true) then
+                            local cleaned = CleanSpeciesString(v, player)
+                            if cleaned then foundName = cleaned; break end
+                        end
+                    end
+                    if foundName then break end
+                end
+            end
+        end
+    end
+
+    -- 2. Поиск в StringValue / ObjectValue внутри папок данных игрока и модели
+    if not foundName then
+        for _, cont in ipairs({
+            model, player,
+            player:FindFirstChild("Data"), player:FindFirstChild("PlayerData"),
+            player:FindFirstChild("Stats"), player:FindFirstChild("leaderstats"),
+            model:FindFirstChild("Data"), model:FindFirstChild("Stats")
+        }) do
+            if cont and not foundName then
+                for _, obj in ipairs(cont:GetChildren()) do
+                    local on = string.lower(obj.Name)
+                    for _, targetKey in ipairs(ExactSpeciesKeys) do
+                        if on == targetKey or string.find(on, targetKey, 1, true) then
+                            if obj:IsA("StringValue") then
+                                local cleaned = CleanSpeciesString(obj.Value, player)
+                                if cleaned then foundName = cleaned; break end
+                            elseif obj:IsA("ObjectValue") and obj.Value then
+                                local cleaned = CleanSpeciesString(obj.Value.Name, player)
+                                if cleaned then foundName = cleaned; break end
                             end
                         end
                     end
+                    if foundName then break end
                 end
             end
         end
     end
 
-    -- 2. Проверяем StringValue / ObjectValue внутри игрока и персонажа
-    for _, container in ipairs({ model, player, player:FindFirstChild("Data"), player:FindFirstChild("Stats"), player:FindFirstChild("PlayerData") }) do
-        if container then
-            for _, obj in ipairs(container:GetChildren()) do
-                if obj:IsA("StringValue") and #obj.Value > 2 and obj.Value ~= player.Name then
-                    local vn = string.lower(obj.Name)
-                    for _, sk in ipairs(SpeciesAttrKeys) do
-                        if string.find(vn, string.lower(sk), 1, true) then
-                            return obj.Value
-                        end
-                    end
-                end
-            end
+    -- 3. Проверяем имя самой модели персонажа (если игра переименовывает Character в вид динозавра)
+    if not foundName then
+        local cleanedModelName = CleanSpeciesString(model.Name, player)
+        if cleanedModelName then foundName = cleanedModelName end
+    end
+
+    -- 4. Проверяем Humanoid.DisplayName (если в нем записан вид динозавра)
+    if not foundName then
+        local hum = model:FindFirstChildOfClass("Humanoid")
+        if hum then
+            local cleanedHum = CleanSpeciesString(hum.DisplayName, player)
+            if cleanedHum then foundName = cleanedHum end
         end
     end
 
-    -- 3. Проверяем дочерние под-модели или нестандартное имя самой модели
-    if model.Name ~= player.Name and model.Name ~= player.DisplayName and #model.Name > 2 then
-        local clean = string.gsub(model.Name, player.Name, "")
-        clean = string.gsub(clean, "^[%s_%-]+", ""):gsub("[%s_%-]+$", "")
-        if #clean > 2 then return clean end
-        return model.Name
-    end
-
-    for _, ch in ipairs(model:GetChildren()) do
-        if ch:IsA("Model") and ch.Name ~= "Hitboxes" and ch.Name ~= "Parts" and ch.Name ~= player.Name and #ch.Name > 2 then
-            return ch.Name
-        end
-    end
-
-    local hum = model:FindFirstChildOfClass("Humanoid")
-    if hum and hum.DisplayName ~= "" and hum.DisplayName ~= player.Name and hum.DisplayName ~= player.DisplayName then
-        return hum.DisplayName
-    end
-
-    return "Dino"
+    speciesCache[model] = { name = foundName, time = os.clock() }
+    return foundName
 end
 
 local function GetDinoStats(player, model, headPart)
@@ -841,7 +892,7 @@ function ESPModule.ScanWorldItems()
             for _, child in ipairs(ch) do
                 if not State.Active then return end
                 count = count + 1
-                if count % 350 == 0 then task.wait() end
+                if count % 250 == 0 then task.wait() end
                 if child ~= Workspace.Terrain and not IsPartOfPlayerCharacter(child) then
                     TryRegisterWorldObject(child)
                     local cn = string.lower(child.Name)
@@ -857,7 +908,7 @@ end
 function ESPModule.Cleanup()
     for _, data in pairs(espGuis) do if data.gui then pcall(function() data.gui:Destroy() end) end end
     for _, data in pairs(worldGuis) do if data.gui then pcall(function() data.gui:Destroy() end) end end
-    table.clear(espGuis); table.clear(worldGuis); table.clear(stamTrack); table.clear(trackedWorld)
+    table.clear(espGuis); table.clear(worldGuis); table.clear(stamTrack); table.clear(trackedWorld); table.clear(headCache); table.clear(speciesCache)
     if ESPFolder then pcall(function() ESPFolder:Destroy() end) end
 end
 
@@ -889,7 +940,6 @@ function ESPModule.Init()
                                         billboard.StudsOffset = Vector3.new(0, 5.5, 0)
                                         billboard.AlwaysOnTop = true; billboard.ResetOnSpawn = false; billboard.Enabled = false; billboard.Parent = ESPFolder
 
-                                        -- Верхняя строчка: Название динозавра (например, Torvosaurus)
                                         local speciesLabel = Instance.new("TextLabel")
                                         speciesLabel.Size = UDim2.new(1, 0, 0, 15)
                                         speciesLabel.Position = UDim2.new(0, 0, 0, 0)
@@ -900,7 +950,6 @@ function ESPModule.Init()
                                         speciesLabel.TextSize = 12
                                         speciesLabel.Parent = billboard
 
-                                        -- Вторая строчка: Дистанция + Ник игрока
                                         local nameLabel = Instance.new("TextLabel")
                                         nameLabel.Size = UDim2.new(1, 0, 0, 15)
                                         nameLabel.Position = UDim2.new(0, 0, 0, 15)
@@ -927,11 +976,16 @@ function ESPModule.Init()
                                     end
                                     local data = espGuis[player]; data.gui.Adornee = targetPart
                                     local hp, maxHp, stam, maxStam = GetDinoStats(player, char, targetPart)
-                                    local dinoName = GetDinoSpeciesName(player, char)
+                                    local dinoName = State.ESP_Species and GetDinoSpeciesName(player, char) or nil
                                     local hpRatio = math.clamp(hp / maxHp, 0, 1); local stamRatio = math.clamp(stam / maxStam, 0, 1)
 
-                                    data.species.Visible = State.ESP_Species
-                                    data.species.Text = "🦖 " .. tostring(dinoName)
+                                    if dinoName then
+                                        data.species.Visible = true
+                                        data.species.Text = "[" .. tostring(dinoName) .. "]"
+                                    else
+                                        data.species.Visible = false
+                                    end
+
                                     data.name.Text = string.format("[%dm] %s", math.floor(dist), player.DisplayName or player.Name)
 
                                     data.hpBg.Visible = State.ESP_Health
@@ -978,7 +1032,7 @@ function ESPModule.Init()
                     for _, gData in pairs(worldGuis) do if gData.gui then gData.gui.Enabled = false end end
                 end
             end)
-            task.wait(0.2)
+            task.wait(0.25)
         end
     end)
 end
