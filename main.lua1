@@ -1,5 +1,5 @@
 -- ═══════════════════════════════════════════════════════════════════════
--- BLACKHAWK RESCUE MISSION 5 // ULTIMATE (Aimbot + FOV Circle + ESP)
+-- BLACKHAWK RESCUE MISSION 5 // ULTIMATE (Aimbot + Wallcheck + ESP Wallhack + NoRecoil)
 -- ═══════════════════════════════════════════════════════════════════════
 print("[BRM5] Запуск скрипта...")
 local Players = game:GetService("Players")
@@ -18,13 +18,15 @@ if Env.BRM5_Cleanup then pcall(Env.BRM5_Cleanup) end
 -- 1. Настройки
 local State = {
     Active = true, Minimized = false, Connections = {},
-    -- Aimbot
+    -- Aimbot (через стены НЕ работает)
     AimbotEnabled = false, AimPart = "Head", FOV = 250, Smoothness = 0.25,
     -- Hitbox
     HitboxEnabled = false, HitboxSize = 15,
-    -- ESP
+    -- ESP (видит сквозь стены)
     ESPEnabled = false, ESPHealth = true, ESPDistance = 2000,
-    ESPOutline = true, ESPRadius = true
+    ESPOutline = true, ESPRadius = true,
+    -- Recoil
+    NoRecoil = false
 }
 Env.BRM5_State = State
 
@@ -83,6 +85,7 @@ local function FindPartByCat(model, cat)
     return nil
 end
 
+-- Проверка видимости ТОЛЬКО для аимбота (ESP её не использует)
 local function HasLineOfSight(targetPart)
     if not targetPart then return false end
     local origin = Camera.CFrame.Position
@@ -94,7 +97,51 @@ local function HasLineOfSight(targetPart)
     return result == nil or result.Instance:IsDescendantOf(targetPart.Parent)
 end
 
--- 4. Aimbot и Hitbox
+-- 4. No Recoil (отключение отдачи через хук)
+if not Env.BRM5_RecoilHooked then
+    pcall(function()
+        local old
+        old = hookmetamethod(game, "__namecall", function(self, ...)
+            local cs = Env.BRM5_State
+            if cs and cs.Active and cs.NoRecoil then
+                local m = getnamecallmethod()
+                if m == "FireServer" or m == "InvokeServer" then
+                    local rName = string.lower(tostring(self.Name))
+                    if string.find(rName, "recoil", 1, true) or string.find(rName, "shake", 1, true) or string.find(rName, "kick", 1, true) or string.find(rName, "aimpunch", 1, true) then
+                        return nil
+                    end
+                end
+            end
+            return old(self, ...)
+        end)
+        Env.BRM5_RecoilHooked = true
+    end)
+end
+
+-- Дополнительный сброс отдачи камеры (на случай если не через remote)
+local recoilResetConn
+local function StartRecoilReset()
+    if recoilResetConn then return end
+    local lastAngles = Camera.CFrame:ToOrientation()
+    recoilResetConn = RunService.RenderStepped:Connect(function()
+        if not State.Active or not State.NoRecoil then
+            lastAngles = Camera.CFrame:ToOrientation()
+            return
+        end
+        -- Ловим резкий скачок камеры вверх (это и есть отдача)
+        local curX, curY, curZ = Camera.CFrame:ToOrientation()
+        local prevX = lastAngles
+        local delta = math.deg(curX) - math.deg(prevX)
+        -- Если камера резко дернулась вверх больше 0.8 градуса - гасим отдачу
+        if delta > 0.8 and delta < 15 then
+            local pos = Camera.CFrame.Position
+            Camera.CFrame = CFrame.new(pos) * CFrame.Angles(prevX, curY, curZ)
+        end
+        lastAngles = Camera.CFrame:ToOrientation()
+    end)
+end
+
+-- 5. Aimbot (с проверкой стен) и Hitbox
 local CachedOriginalHitboxes = {}
 
 local function UpdateAimbot()
@@ -105,6 +152,7 @@ local function UpdateAimbot()
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= LocalPlayer and player.Character then
             local targetPart = FindPartByCat(player.Character, State.AimPart)
+            -- ВАЖНО: аимбот НЕ видит сквозь стены
             if targetPart and HasLineOfSight(targetPart) then
                 local screenPos, onScreen = Camera:WorldToScreenPoint(targetPart.Position)
                 if onScreen then
@@ -151,7 +199,7 @@ local function UpdateHitboxes()
     end
 end
 
--- 5. ESP и Радиус
+-- 6. ESP (видит сквозь стены) и Радиус
 local espFolder = Instance.new("Folder"); espFolder.Name = "BRM5_ESP"; pcall(function() espFolder.Parent = Utils.GuiParent() end)
 local espGuis = {}
 local highlights = {}
@@ -194,8 +242,8 @@ local function UpdateESP()
             local hum = char:FindFirstChildOfClass("Humanoid")
             if head and hum then
                 local dist = (myPos - head.Position).Magnitude
-                local isVisible = HasLineOfSight(head)
-                if dist <= State.ESPDistance and isVisible then
+                -- ESP ВИДИТ СКВОЗЬ СТЕНЫ (без проверки HasLineOfSight)
+                if dist <= State.ESPDistance then
                     if not espGuis[player] then
                         local bb = Instance.new("BillboardGui"); bb.Size = UDim2.fromOffset(160, 40); bb.StudsOffset = Vector3.new(0, 3, 0); bb.AlwaysOnTop = true; bb.Parent = espFolder
                         local nameLbl = Instance.new("TextLabel"); nameLbl.Size = UDim2.new(1, 0, 0, 14); nameLbl.BackgroundTransparency = 1; nameLbl.TextColor3 = Color3.fromRGB(255, 255, 255); nameLbl.TextStrokeTransparency = 0.1; nameLbl.Font = Enum.Font.GothamBold; nameLbl.TextSize = 11; nameLbl.Parent = bb
@@ -206,7 +254,8 @@ local function UpdateESP()
                     end
                     if State.ESPOutline and not highlights[player] then
                         local hl = Instance.new("Highlight")
-                        hl.DepthMode = Enum.HighlightDepthMode.Occlusion
+                        -- AlwaysOnTop - обводка видна сквозь стены!
+                        hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
                         hl.FillColor = Color3.fromRGB(255, 50, 50)
                         hl.FillTransparency = 0.5
                         hl.OutlineColor = Color3.fromRGB(255, 50, 50)
@@ -235,10 +284,10 @@ local function UpdateESP()
     end
 end
 
--- 6. Меню и FOV Круг
+-- 7. Меню и FOV Круг
 local ScreenGui = Instance.new("ScreenGui"); ScreenGui.Name = "BRM5_UI"; ScreenGui.ResetOnSpawn = false; ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling; pcall(function() ScreenGui.Parent = Utils.GuiParent() end)
 
--- FOV Circle (визуальный круг аимбота)
+-- FOV Circle (круг аимбота)
 local fovCircle = Instance.new("Frame")
 fovCircle.Name = "AimbotFOV"
 fovCircle.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -260,7 +309,7 @@ fovStroke.Transparency = 0.3
 fovStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
 fovStroke.Parent = fovCircle
 
--- Обновление FOV круга в реальном времени
+-- Обновление FOV круга
 task.spawn(function()
     while State.Active do
         pcall(function()
@@ -273,7 +322,7 @@ task.spawn(function()
     end
 end)
 
-local TargetSize, IconSize = UDim2.fromOffset(450, 320), UDim2.fromOffset(50, 50)
+local TargetSize, IconSize = UDim2.fromOffset(450, 340), UDim2.fromOffset(50, 50)
 local MainFrame = Instance.new("Frame"); MainFrame.AnchorPoint = Vector2.new(0.5, 0.5); MainFrame.Position = UDim2.fromScale(0.5, 0.5); MainFrame.Size = UDim2.fromOffset(0, 0); MainFrame.BackgroundColor3 = Theme.Background; MainFrame.ClipsDescendants = true; MainFrame.Parent = ScreenGui; Utils.Style(MainFrame, 12, Theme.Stroke, 1.2)
 local TopBar = Instance.new("Frame"); TopBar.Size = UDim2.new(1, 0, 0, 42); TopBar.BackgroundColor3 = Theme.Surface; TopBar.Parent = MainFrame; Utils.Style(TopBar, 12, nil)
 local TitleLabel = Instance.new("TextLabel"); TitleLabel.Size = UDim2.new(1, -120, 1, 0); TitleLabel.Position = UDim2.fromOffset(15, 0); TitleLabel.BackgroundTransparency = 1; TitleLabel.Text = "BLACKHAWK RM5 // ULTIMATE"; TitleLabel.TextColor3 = Theme.TextPrimary; TitleLabel.Font = Enum.Font.GothamBold; TitleLabel.TextSize = 13; TitleLabel.TextXAlignment = Enum.TextXAlignment.Left; TitleLabel.Parent = TopBar
@@ -309,21 +358,28 @@ end
 
 local CombatPage = CreateTab("Combat"); local RenderPage = CreateTab("Render")
 
-CreateToggle(CombatPage, "Aimbot (Поворот камеры)", State.AimbotEnabled, 1, function(v) State.AimbotEnabled = v end)
+-- Combat: Aimbot (сквозь стены НЕ работает)
+CreateToggle(CombatPage, "Aimbot (НЕ видит через стены)", State.AimbotEnabled, 1, function(v) State.AimbotEnabled = v end)
 CreateCycleButton(CombatPage, "Цель Aimbot", { "Head", "Body", "HumanoidRootPart" }, 1, 2, function(opt) 
     State.AimPart = (opt == "HumanoidRootPart" and "Body" or opt) 
 end)
 CreateCycleButton(CombatPage, "Плавность Aimbot", { "0.1 (Медленно)", "0.25 (Средне)", "0.5 (Быстро)", "1.0 (Мгновенно)" }, 2, 3, function(_, idx) State.Smoothness = ({0.1, 0.25, 0.5, 1.0})[idx] end)
-
--- НОВОЕ: Радиус круга аимбота
-CreateCycleButton(CombatPage, "Радиус FOV (Круг)", { "100", "150", "200", "250", "350", "500", "700" }, 4, 4, function(_, idx) 
+-- Круг FOV аимбота
+CreateCycleButton(CombatPage, "Радиус FOV (Круг аимбота)", { "100", "150", "200", "250", "350", "500", "700" }, 4, 4, function(_, idx) 
     State.FOV = ({100, 150, 200, 250, 350, 500, 700})[idx] 
 end)
 
-CreateToggle(CombatPage, "Hitbox Expander (Увеличение)", State.HitboxEnabled, 5, function(v) State.HitboxEnabled = v end)
-CreateCycleButton(CombatPage, "Размер Hitbox", { "8", "12", "15", "20", "30" }, 3, 6, function(_, idx) State.HitboxSize = ({8, 12, 15, 20, 30})[idx] end)
+-- No Recoil
+CreateToggle(CombatPage, "No Recoil (Убрать отдачу)", State.NoRecoil, 5, function(v) 
+    State.NoRecoil = v 
+    if v then StartRecoilReset() end
+end)
 
-CreateToggle(RenderPage, "ESP Игроков (Не сквозь стены)", State.ESPEnabled, 1, function(v) State.ESPEnabled = v end)
+CreateToggle(CombatPage, "Hitbox Expander (Увеличение)", State.HitboxEnabled, 6, function(v) State.HitboxEnabled = v end)
+CreateCycleButton(CombatPage, "Размер Hitbox", { "8", "12", "15", "20", "30" }, 3, 7, function(_, idx) State.HitboxSize = ({8, 12, 15, 20, 30})[idx] end)
+
+-- Render: ESP (видит СКВОЗЬ СТЕНЫ)
+CreateToggle(RenderPage, "ESP Игроков (Видит сквозь стены)", State.ESPEnabled, 1, function(v) State.ESPEnabled = v end)
 CreateToggle(RenderPage, "Обводка (Highlight)", State.ESPOutline, 2, function(v) State.ESPOutline = v end)
 CreateToggle(RenderPage, "Показывать HP", State.ESPHealth, 3, function(v) State.ESPHealth = v end)
 CreateToggle(RenderPage, "Круг радиуса ESP", State.ESPRadius, 4, function(v) State.ESPRadius = v end)
@@ -333,8 +389,9 @@ local function MinimizeUI() if State.Minimized then return end State.Minimized =
 local function RestoreUI() if not State.Minimized then return end State.Minimized = false; MiniIcon.Visible = false; MainFrame.Visible = true end
 local function DeactivateScript()
     if not State.Active then return end
-    State.Active = false; State.AimbotEnabled = false; State.ESPEnabled = false; State.HitboxEnabled = false; State.ESPRadius = false
+    State.Active = false; State.AimbotEnabled = false; State.ESPEnabled = false; State.HitboxEnabled = false; State.ESPRadius = false; State.NoRecoil = false
     for _, conn in ipairs(State.Connections) do pcall(function() conn:Disconnect() end) end
+    if recoilResetConn then pcall(function() recoilResetConn:Disconnect() end) end
     for _, hl in pairs(highlights) do pcall(function() hl:Destroy() end) end
     if espFolder then pcall(function() espFolder:Destroy() end) end
     if radiusCircle then pcall(function() radiusCircle:Destroy() end) end
