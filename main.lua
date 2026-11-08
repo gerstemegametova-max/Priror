@@ -1,5 +1,5 @@
--- Prior Extinction // Tablet & Mobile Ultra-Optimized (Zero-Lag Strict SilentAim + Multi-Part Hitbox/Reach + NoSleep + Species ESP)
-print("[PE] Запуск исправленной версии (Silent Aim без лагов)...")
+-- Prior Extinction // Tablet & Mobile Ultra-Optimized (1.5x-5.0x Exact Shape Multiplier + Zero-Lag Strict SilentAim + Species ESP)
+print("[PE] Запуск версии с множителями 1.5x - 5.0x и точным повторением формы хитбоксов...")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -20,12 +20,12 @@ local State = {
     NeedsEnemyRestore = false, NeedsLocalRestore = false,
     -- Strict Silent Aim (Zero-Lag)
     SilentAim = false, AimTargetPart = "Head", StrictCancelNonTarget = true,
-    -- Enemy Hitbox Expander (Мульти-выбор + Шея)
-    HitboxMaster = false, HitboxTransparency = 0.75, HitboxTransLevel = 3, HitboxSizeLevel = 3,
+    -- Enemy Hitbox Expander (Умножение родной формы 1.5x - 5.0x + Мульти-выбор + Шея)
+    HitboxMaster = false, HitboxTransparency = 0.75, HitboxTransLevel = 3, HitboxSizeLevel = 2, -- По умолчанию 2.0x
     EnemyHitboxParts = { Head = true, Neck = true, Jaw = false, Body = false, Tail = false, Leg = false },
     NoAttackCD = false,
-    -- Local Reach (Мульти-выбор + Шея)
-    ReachEnabled = false, ReachScaleLevel = 3, ReachTransparency = 0.75, ReachTransLevel = 3,
+    -- Local Reach (Умножение родной формы 1.5x - 5.0x + Мульти-выбор + Шея)
+    ReachEnabled = false, ReachScaleLevel = 3, ReachTransparency = 0.75, ReachTransLevel = 3, -- По умолчанию 2.0x
     ReachParts = { Jaw = true, Head = true, Neck = false, Tail = false, Leg = false, Body = false },
     -- Render & Camera
     ESPEnabled = false, ESPMaxDistance = 2000, ESP_Health = true, ESP_Stamina = true, ESP_Species = true,
@@ -66,9 +66,12 @@ local Theme = {
     DangerStroke = Color3.fromRGB(95, 40, 45)
 }
 
-local HitboxSizes = { 12, 18, 25, 32, 42 }
-local ReachRanges = { -0.5, 14, 22, 30, 40, 55 }
-local ReachLabels = { "0.5x (Уменьш.)", "14м (Форма)", "22м (Форма)", "30м (Форма)", "40м (Форма)", "55м (Форма)" }
+-- Точные множители от 1.5x до 5.0x с шагом 0.5 (сохраняют 100% оригинальную форму хитбокса без превращения в квадрат)
+local HitboxMultipliers = { 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0 }
+local HitboxLabels = { "1.5x", "2.0x", "2.5x", "3.0x", "3.5x", "4.0x", "4.5x", "5.0x" }
+
+local ReachMultipliers = { 0.5, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0 }
+local ReachLabels = { "0.5x (Уменьш.)", "1.5x", "2.0x", "2.5x", "3.0x", "3.5x", "4.0x", "4.5x", "5.0x" }
 
 local TransValues = { 0.2, 0.5, 0.75, 0.9, 1.0 }
 local TransLabels = { "0.2 (Яркий)", "0.5 (Средний)", "0.75 (Слабый)", "0.9 (Почти невид.)", "1.0 (Невидимый)" }
@@ -429,10 +432,12 @@ function SaveDino.Init()
     end))
 end
 
--- 6. Combat (Ультра-легкий Silent Aim без GetDescendants в хуке и без пересчета физики каждого кадра)
+-- 6. Combat (Прямое умножение формы orig.Size * mult [1.5x..5.0x] + Zero-Lag Strict Silent Aim)
 local Combat = {}
 local ZP = PhysicalProperties.new(0.0001, 0, 0, 0, 0)
 local CachedLocalGroups = nil
+local PartToEnemyModel = setmetatable({}, { __mode = "k" })
+local PartToCategory = setmetatable({}, { __mode = "k" })
 
 local function matchCat(partName, fullTail)
     local l = string.lower(partName)
@@ -465,7 +470,6 @@ local function isCritRoot(model, part)
     return ok and ar == part
 end
 
--- МГНОВЕННЫЙ поиск целевой детали ТОЛЬКО по готовому кэшу (0 вызовов GetDescendants внутри хука = 0 лагов!)
 local function findStrictTargetPartFast(model, cat)
     local c = State.CachedModels[model]
     if not c then return nil end
@@ -479,17 +483,6 @@ local function findStrictTargetPartFast(model, cat)
     elseif cat == "Head" and c.Jaw and c.Jaw[1] then
         return c.Jaw[1]
     end
-    return nil
-end
-
--- Мгновенная проверка: принадлежит ли деталь врагу из нашего кэша (за O(1) без циклов while)
-local PartToEnemyModel = setmetatable({}, { __mode = "k" })
-local PartToCategory = setmetatable({}, { __mode = "k" })
-
-local function getEnemyFast(part)
-    if not part then return nil end
-    local cached = PartToEnemyModel[part]
-    if cached and cached.Parent then return cached end
     return nil
 end
 
@@ -547,17 +540,10 @@ function Combat.ScanModel(model, isSelf)
     return cats
 end
 
-local function GetProportionalSize(origSize, targetRange)
-    if targetRange < 0 then
-        return origSize * math.abs(targetRange)
-    end
-    local maxAxis = math.max(origSize.X, origSize.Y, origSize.Z, 0.5)
-    local ratio = Vector3.new(
-        math.clamp(origSize.X / maxAxis, 0.72, 1.0),
-        math.clamp(origSize.Y / maxAxis, 0.72, 1.0),
-        math.clamp(origSize.Z / maxAxis, 0.72, 1.0)
-    )
-    return ratio * targetRange
+-- Прямое умножение родного хитбокса детали на множитель (1.5x, 2.0x, 2.5x ... 5.0x)
+-- Сохраняет 100% точную форму челюсти, головы, шеи и хвоста, не делая из них квадрат!
+local function GetScaledHitboxSize(origSize, mult)
+    return origSize * mult
 end
 
 local function IsCleanBridgePacket(arg1)
@@ -571,62 +557,53 @@ local function IsCleanBridgePacket(arg1)
     return false
 end
 
--- Ультра-быстрый обработчик таблиц в __namecall:
--- Игнорирует обычные пакеты ходьбы/камеры и срабатывает ТОЛЬКО тогда, когда в пакете реально передан BasePart врага!
-local function ProcessFastSilentAimTable(tbl, aimCat, depth)
-    if depth > 4 then return false, false end
+-- Ультра-быстрая проверка таблицы ТОЛЬКО на наличие BasePart врага (без перебора строк и без лишних аллокаций = 0 лагов!)
+local function TryPatchSilentAimTable(tbl, aimCat, depth)
+    if depth > 3 then return false, false end
     local changed = false
-    local shouldCancel = false
-    local resolvedTargetPart = nil
+    local cancel = false
+    local targetPart = nil
 
     for k, v in pairs(tbl) do
         local tv = typeof(v)
         if tv == "Instance" then
-            if v:IsA("BasePart") then
-                local em = getEnemyFast(v)
-                if em then
-                    local hitCat = PartToCategory[v] or matchCat(v.Name, false)
-                    if hitCat == aimCat then
-                        resolvedTargetPart = v
+            local em = PartToEnemyModel[v]
+            if em and em.Parent then
+                local hitCat = PartToCategory[v]
+                if hitCat == aimCat then
+                    targetPart = v
+                else
+                    local tp = findStrictTargetPartFast(em, aimCat)
+                    if tp then
+                        tbl[k] = tp
+                        targetPart = tp
+                        changed = true
                     else
-                        local tp = findStrictTargetPartFast(em, aimCat)
-                        if tp then
-                            tbl[k] = tp
-                            resolvedTargetPart = tp
-                            changed = true
-                        else
-                            shouldCancel = true
-                        end
+                        cancel = true
                     end
                 end
             end
         elseif tv == "table" then
-            local subChanged, subCancel = ProcessFastSilentAimTable(v, aimCat, depth + 1)
-            if subChanged then changed = true end
-            if subCancel then shouldCancel = true end
+            local subMod, subCancel = TryPatchSilentAimTable(v, aimCat, depth + 1)
+            if subMod then changed = true end
+            if subCancel then cancel = true end
         end
     end
 
-    if resolvedTargetPart then
+    if targetPart then
         for k, v in pairs(tbl) do
             local tv = typeof(v)
             if tv == "Vector3" then
-                tbl[k] = resolvedTargetPart.Position
+                tbl[k] = targetPart.Position
                 changed = true
             elseif tv == "CFrame" then
-                tbl[k] = resolvedTargetPart.CFrame
+                tbl[k] = targetPart.CFrame
                 changed = true
-            elseif tv == "string" and #v >= 3 and #v <= 20 then
-                local sc = matchCat(v, false)
-                if sc and sc ~= aimCat then
-                    tbl[k] = resolvedTargetPart.Name
-                    changed = true
-                end
             end
         end
     end
 
-    return changed, shouldCancel
+    return changed, cancel
 end
 
 if not Env.PriorUI_HookInstalled then
@@ -636,56 +613,54 @@ if not Env.PriorUI_HookInstalled then
             local cs = Env.PriorUI_State
             if not (cs and cs.Active) then return old(self, ...) end
             local m = getnamecallmethod()
-            if m == "FireServer" or m == "InvokeServer" then
-                local rName = tostring(self.Name)
+            if m ~= "FireServer" and m ~= "InvokeServer" then
+                return old(self, ...)
+            end
 
-                if cs.SaveDinoPhase ~= "idle" and string.find(string.lower(rName), "fall", 1, true) then
-                    return nil
+            local rName = self.Name
+            if cs.SaveDinoPhase ~= "idle" and string.find(string.lower(rName), "fall", 1, true) then
+                return nil
+            end
+
+            -- Если SilentAim выключен и пакет мытья уже пойман — мгновенный выход за 0 мс без создания таблицы {...}!
+            if not cs.SilentAim and Env.PE_CapturedCleanPacket then
+                return old(self, ...)
+            end
+
+            local a1, a2, a3, a4 = ...
+
+            if not Env.PE_CapturedCleanPacket and rName == "dataRemoteEvent" and type(a1) == "table" then
+                if IsCleanBridgePacket(a1) then
+                    Env.PE_CapturedCleanPacket = { Remote = self, Args = Utils.DeepClone({ ... }) }
                 end
+            end
 
-                local args = { ... }
-
-                if m == "FireServer" and rName == "dataRemoteEvent" and not Env.PE_CapturedCleanPacket then
-                    if IsCleanBridgePacket(args[1]) then
-                        Env.PE_CapturedCleanPacket = { Remote = self, Args = Utils.DeepClone(args) }
-                    end
-                end
-
-                if cs.SilentAim then
-                    local modified = false
-                    local cancelAttack = false
-                    for i = 1, #args do
-                        local arg = args[i]
-                        local ta = typeof(arg)
-                        if ta == "Instance" and arg:IsA("BasePart") then
-                            local em = getEnemyFast(arg)
-                            if em then
-                                local hitCat = PartToCategory[arg] or matchCat(arg.Name, false)
-                                if hitCat ~= cs.AimTargetPart then
-                                    local tp = findStrictTargetPartFast(em, cs.AimTargetPart)
-                                    if tp then
-                                        args[i] = tp
-                                        modified = true
-                                    else
-                                        cancelAttack = true
-                                    end
-                                end
+            if cs.SilentAim then
+                local t1 = typeof(a1)
+                if t1 == "Instance" then
+                    local em = PartToEnemyModel[a1]
+                    if em and em.Parent then
+                        local hitCat = PartToCategory[a1]
+                        if hitCat ~= cs.AimTargetPart then
+                            local tp = findStrictTargetPartFast(em, cs.AimTargetPart)
+                            if tp then
+                                return old(self, tp, a2, a3, a4)
+                            elseif cs.StrictCancelNonTarget then
+                                return nil
                             end
-                        elseif ta == "table" then
-                            local subMod, subCancel = ProcessFastSilentAimTable(arg, cs.AimTargetPart, 1)
-                            if subMod then modified = true end
-                            if subCancel then cancelAttack = true end
                         end
                     end
-
-                    if cancelAttack and cs.StrictCancelNonTarget then
+                elseif t1 == "table" then
+                    local mod, cancel = TryPatchSilentAimTable(a1, cs.AimTargetPart, 1)
+                    if cancel and cs.StrictCancelNonTarget then
                         return nil
                     end
-                    if modified then
-                        return old(self, table.unpack(args))
+                    if mod then
+                        return old(self, a1, a2, a3, a4)
                     end
                 end
             end
+
             return old(self, ...)
         end)
         Env.PriorUI_HookInstalled = true
@@ -699,6 +674,7 @@ function Combat.RestoreEnemyParts()
                 p.Size = o.Size; p.Transparency = o.Transparency; p.CanCollide = o.CanCollide
                 p.CanQuery = o.CanQuery; p.CanTouch = o.CanTouch; p.Massless = o.Massless
                 p.CustomPhysicalProperties = o.CustomPhysicalProperties; p.RootPriority = o.RootPriority
+                if o.Mesh and o.MeshScale then o.Mesh.Scale = o.MeshScale end
             end
         end)
     end
@@ -714,6 +690,7 @@ function Combat.RestoreLocalParts()
                 if State.SaveDinoPhase == "idle" then p.CanCollide = o.CanCollide end
                 p.CanQuery = o.CanQuery; p.CanTouch = o.CanTouch; p.Massless = o.Massless
                 p.CustomPhysicalProperties = o.CustomPhysicalProperties; p.RootPriority = o.RootPriority
+                if o.Mesh and o.MeshScale then o.Mesh.Scale = o.MeshScale end
             end
         end)
     end
@@ -753,7 +730,7 @@ function Combat.Init()
         end
     end)
 
-    -- Умное удержание без лишней перезаписи .Size (полное отсутствие лагов физики!)
+    -- Удержание множителя 1.5x - 5.0x с сохранением точной формы детали (каждые 0.12 сек, без лагов!)
     local lastApply = 0
     Utils.Track(RunService.Heartbeat:Connect(function()
         if not State.Active then return end
@@ -764,8 +741,9 @@ function Combat.Init()
         if State.NeedsEnemyRestore then Combat.RestoreEnemyParts() end
         if State.NeedsLocalRestore then Combat.RestoreLocalParts() end
 
+        -- 1. Вражеские Хитбоксы (умножение родной формы на 1.5x..5.0x + изоляция цели Silent Aim)
         if State.HitboxMaster or (State.SilentAim and State.StrictCancelNonTarget) then
-            local tSize = HitboxSizes[State.HitboxSizeLevel] or 25
+            local enemyMult = HitboxMultipliers[State.HitboxSizeLevel] or 2.0
             local aimCat = State.AimTargetPart
 
             for model, groups in pairs(State.CachedModels) do
@@ -776,26 +754,31 @@ function Combat.Init()
                         local disableNonTargetTouch = State.SilentAim and State.StrictCancelNonTarget and (not isAimTargetCat) and (not expandThisCat)
 
                         if expandThisCat or isAimTargetCat or disableNonTargetTouch then
-                            for idx, part in ipairs(parts) do
+                            for _, part in ipairs(parts) do
                                 if part and part.Parent and not isCritRoot(model, part) then
                                     local o = State.OriginalParts[part]
                                     if not o then
+                                        local mesh = part:FindFirstChildOfClass("SpecialMesh")
                                         o = {
                                             Size = part.Size, Transparency = part.Transparency, CanCollide = part.CanCollide,
                                             CanQuery = part.CanQuery, CanTouch = part.CanTouch, Massless = part.Massless,
-                                            CustomPhysicalProperties = part.CustomPhysicalProperties, RootPriority = part.RootPriority
+                                            CustomPhysicalProperties = part.CustomPhysicalProperties, RootPriority = part.RootPriority,
+                                            Mesh = mesh, MeshScale = mesh and mesh.Scale or nil
                                         }
                                         State.OriginalParts[part] = o
                                     end
 
-                                    if expandThisCat and idx <= 6 then
-                                        local targetVec = GetProportionalSize(o.Size, tSize)
-                                        if (part.Size - targetVec).Magnitude > 0.1 then
+                                    if expandThisCat then
+                                        local targetVec = GetScaledHitboxSize(o.Size, enemyMult)
+                                        if (part.Size - targetVec).Magnitude > 0.05 then
                                             part.Massless = true
                                             part.CanCollide = false
                                             part.CustomPhysicalProperties = ZP
                                             part.RootPriority = -127
                                             part.Size = targetVec
+                                            if o.Mesh and o.MeshScale then
+                                                o.Mesh.Scale = o.MeshScale * enemyMult
+                                            end
                                         end
                                         if math.abs(part.Transparency - State.HitboxTransparency) > 0.02 then
                                             part.Transparency = State.HitboxTransparency
@@ -803,7 +786,7 @@ function Combat.Init()
                                         if not part.CanTouch then part.CanTouch = true end
                                         if not part.CanQuery then part.CanQuery = true end
                                     elseif disableNonTargetTouch then
-                                        -- Только выключаем CanTouch/CanQuery 1 раз, НЕ дергая part.Size каждый тик!
+                                        -- Если включен строгий Silent Aim (например на Head), выключаем CanTouch/CanQuery у тела/хвоста/ног врага, чтобы в тело НЕ регало!
                                         if part.CanTouch then part.CanTouch = false end
                                         if part.CanQuery then part.CanQuery = false end
                                     elseif isAimTargetCat then
@@ -818,30 +801,36 @@ function Combat.Init()
             end
         end
 
+        -- 2. Локальный Reach (умножение родной формы на 0.5x / 1.5x..5.0x)
         if State.ReachEnabled and CachedLocalGroups then
             local myChar = LocalPlayer.Character
             if myChar and myChar.Parent then
-                local targetRange = ReachRanges[State.ReachScaleLevel] or 22
+                local reachMult = ReachMultipliers[State.ReachScaleLevel] or 2.0
                 for cat, parts in pairs(CachedLocalGroups) do
                     if State.ReachParts[cat] == true then
                         for _, part in ipairs(parts) do
                             if part and part.Parent and not isCritRoot(myChar, part) then
                                 local orig = State.LocalOriginalParts[part]
                                 if not orig then
+                                    local mesh = part:FindFirstChildOfClass("SpecialMesh")
                                     orig = {
                                         Size = part.Size, Transparency = part.Transparency, CanCollide = part.CanCollide,
                                         CanQuery = part.CanQuery, CanTouch = part.CanTouch, Massless = part.Massless,
-                                        CustomPhysicalProperties = part.CustomPhysicalProperties, RootPriority = part.RootPriority
+                                        CustomPhysicalProperties = part.CustomPhysicalProperties, RootPriority = part.RootPriority,
+                                        Mesh = mesh, MeshScale = mesh and mesh.Scale or nil
                                     }
                                     State.LocalOriginalParts[part] = orig
                                 end
-                                local targetVec = GetProportionalSize(orig.Size, targetRange)
-                                if (part.Size - targetVec).Magnitude > 0.1 then
+                                local targetVec = GetScaledHitboxSize(orig.Size, reachMult)
+                                if (part.Size - targetVec).Magnitude > 0.05 then
                                     part.Massless = true
                                     part.CanCollide = false
                                     part.CustomPhysicalProperties = ZP
                                     part.RootPriority = -127
                                     part.Size = targetVec
+                                    if orig.Mesh and orig.MeshScale then
+                                        orig.Mesh.Scale = orig.MeshScale * reachMult
+                                    end
                                 end
                                 if math.abs(part.Transparency - State.ReachTransparency) > 0.02 then
                                     part.Transparency = State.ReachTransparency
@@ -1320,12 +1309,12 @@ end
 
 local CombatPage = CreateTab("Combat"); local RenderPage = CreateTab("Render"); local ToolsPage = CreateTab("Tools")
 
--- Вкладка Combat: Reach (Мульти-выбор + Шея)
-CreateToggle(CombatPage, "Reach (Дальность + Форма частей тела)", State.ReachEnabled, 1, function(v)
+-- Вкладка Combat: Reach (Умножение родного хитбокса 1.5x - 5.0x + Мульти-выбор + Шея)
+CreateToggle(CombatPage, "Reach (Точная форма хитбокса)", State.ReachEnabled, 1, function(v)
     State.ReachEnabled = v
     if not v then State.NeedsLocalRestore = true end
 end)
-CreateCycleButton(CombatPage, "Дистанция / Форма Reach", ReachLabels, State.ReachScaleLevel, 2, function(_, idx) State.ReachScaleLevel = idx end)
+CreateCycleButton(CombatPage, "Множитель Reach (1.5x - 5x)", ReachLabels, State.ReachScaleLevel, 2, function(_, idx) State.ReachScaleLevel = idx end)
 CreateCycleButton(CombatPage, "Прозрачность Reach", TransLabels, State.ReachTransLevel, 3, function(_, idx)
     State.ReachTransLevel = idx
     State.ReachTransparency = TransValues[idx] or 0.75
@@ -1351,12 +1340,12 @@ CreateToggle(CombatPage, "Не регать урон мимо цели Silent Ai
     State.NeedsEnemyRestore = true
 end)
 
--- Enemy Hitbox Expander (Мульти-выбор + Шея)
-CreateToggle(CombatPage, "Enemy Hitbox Expander (Враги)", State.HitboxMaster, 13, function(v)
+-- Enemy Hitbox Expander (Умножение родного хитбокса 1.5x - 5.0x + Мульти-выбор + Шея)
+CreateToggle(CombatPage, "Enemy Hitbox Expander (Точная форма)", State.HitboxMaster, 13, function(v)
     State.HitboxMaster = v
     State.NeedsEnemyRestore = true
 end)
-CreateCycleButton(CombatPage, "Размер Хитбокса Врага", { "1 (12)", "2 (18)", "3 (25)", "4 (32)", "5 (42)" }, State.HitboxSizeLevel, 14, function(_, idx) State.HitboxSizeLevel = idx end)
+CreateCycleButton(CombatPage, "Множитель Хитбокса Врага", HitboxLabels, State.HitboxSizeLevel, 14, function(_, idx) State.HitboxSizeLevel = idx end)
 CreateCycleButton(CombatPage, "Прозрачность Хитбокса Врага", TransLabels, State.HitboxTransLevel, 15, function(_, idx)
     State.HitboxTransLevel = idx
     State.HitboxTransparency = TransValues[idx] or 0.75
