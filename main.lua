@@ -1,5 +1,5 @@
--- Prior Extinction // Ultimate Mobile (Multi-Part Enemy Hitbox + Neck Category + Proportional Reach + NoSleepScreen + Species ESP)
-print("[PE] Запуск полной версии с мульти-выбором Hitbox и категорией Шея...")
+-- Prior Extinction // Tablet & Mobile Ultra-Optimized (Strict Target-Only SilentAim + Multi-Part Hitbox/Reach + NoSleep + Species ESP)
+print("[PE] Запуск ультра-оптимизированной версии со строгим Silent Aim...")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -17,28 +17,16 @@ if Env.PriorUI_Cleanup then pcall(Env.PriorUI_Cleanup) end
 -- 1. State & Config
 local State = {
     Active = true, Minimized = false, Connections = {}, OriginalParts = {}, LocalOriginalParts = {}, CachedModels = {},
-    SilentAim = false, AimTargetPart = "Head",
-    -- Enemy Hitbox Expander (теперь с мульти-выбором и Шеей!)
+    NeedsEnemyRestore = false, NeedsLocalRestore = false,
+    -- Strict Silent Aim (Регает ТОЛЬКО в выбранную часть тела, блокируя урон в тело)
+    SilentAim = false, AimTargetPart = "Head", StrictCancelNonTarget = true,
+    -- Enemy Hitbox Expander (Мульти-выбор + Шея)
     HitboxMaster = false, HitboxTransparency = 0.75, HitboxTransLevel = 3, HitboxSizeLevel = 3,
-    EnemyHitboxParts = {
-        Head = true,
-        Neck = true,
-        Jaw = false,
-        Body = false,
-        Tail = false,
-        Leg = false,
-    },
+    EnemyHitboxParts = { Head = true, Neck = true, Jaw = false, Body = false, Tail = false, Leg = false },
     NoAttackCD = false,
-    -- Local Reach (тоже с Шеей и мульти-выбором)
+    -- Local Reach (Мульти-выбор + Шея)
     ReachEnabled = false, ReachScaleLevel = 3, ReachTransparency = 0.75, ReachTransLevel = 3,
-    ReachParts = {
-        Jaw = true,
-        Head = true,
-        Neck = false,
-        Tail = false,
-        Leg = false,
-        Body = false,
-    },
+    ReachParts = { Jaw = true, Head = true, Neck = false, Tail = false, Leg = false, Body = false },
     -- Render & Camera
     ESPEnabled = false, ESPMaxDistance = 2000, ESP_Health = true, ESP_Stamina = true, ESP_Species = true,
     ESPBones = false, ESPCorpses = false, WorldESPMaxDistance = 2000,
@@ -85,7 +73,6 @@ local ReachLabels = { "0.5x (Уменьш.)", "14м (Форма)", "22м (Фор
 local TransValues = { 0.2, 0.5, 0.75, 0.9, 1.0 }
 local TransLabels = { "0.2 (Яркий)", "0.5 (Средний)", "0.75 (Слабый)", "0.9 (Почти невид.)", "1.0 (Невидимый)" }
 
--- Добавлена полноценная категория Neck (все сегменты шеи Neck1, Neck2, Throat и т.д.)
 local PartPatterns = {
     Jaw = { "jaw", "mandible", "snout", "mouth", "bite", "muzzle", "beak", "fang", "teeth" },
     Head = { "head", "skull", "cranium", "horn", "crest", "frill" },
@@ -143,7 +130,7 @@ function Utils.DeepClone(tbl, seen)
     return copy
 end
 
--- 3. Visuals & Unlock Camera
+-- 3. Visuals & Unlock Camera (С троттлингом 0.08 сек — не греет планшет/телефон)
 local Visuals = {}
 local wasNightVision = false
 local wasUnlockCam = false
@@ -206,18 +193,22 @@ function Visuals.Init()
     local pg = LocalPlayer:FindFirstChild("PlayerGui")
     if pg then
         Utils.Track(pg.DescendantAdded:Connect(function(desc)
-            task.defer(function() pcall(CheckIfSleepOverlay, desc) end)
+            if State.NoSleepScreen then
+                task.defer(function() pcall(CheckIfSleepOverlay, desc) end)
+            end
         end))
     end
 
+    local lastVisTick = 0
     Utils.Track(RunService.RenderStepped:Connect(function()
-        if not State.Active then return end
+        if not State.Active or (not State.NoBlur and not State.NoSleepScreen) then return end
+        local now = os.clock()
+        if (now - lastVisTick) < 0.08 then return end
+        lastVisTick = now
 
-        if State.NoBlur or State.NoSleepScreen then
-            ProcessPostEffects(Lighting)
-            if Workspace.CurrentCamera then
-                ProcessPostEffects(Workspace.CurrentCamera)
-            end
+        ProcessPostEffects(Lighting)
+        if Workspace.CurrentCamera then
+            ProcessPostEffects(Workspace.CurrentCamera)
         end
 
         if State.NoSleepScreen then
@@ -235,8 +226,7 @@ function Visuals.Init()
                                 g.BackgroundTransparency = 1
                             end
                         elseif g:IsA("ImageLabel") then
-                            local ic = g.ImageColor3
-                            local bc = g.BackgroundColor3
+                            local ic, bc = g.ImageColor3, g.BackgroundColor3
                             if ic.R < 0.25 and ic.G < 0.25 and ic.B < 0.25 and g.ImageTransparency < 0.98 then
                                 g.ImageTransparency = 1
                             end
@@ -286,7 +276,7 @@ function Visuals.Init()
                     Visuals.RestoreLighting()
                 end
             end)
-            task.wait(0.2)
+            task.wait(0.3)
         end
     end)
 end
@@ -439,14 +429,13 @@ function SaveDino.Init()
     end))
 end
 
--- 6. Combat (Мульти-выбор Enemy Hitbox + Шея Neck + Reach + Глубокий Silent Aim)
+-- 6. Combat (Строгий Silent Aim: блокирует попадания в тело + перенаправляет только в цель + мобильная оптимизация)
 local Combat = {}
 local ZP = PhysicalProperties.new(0.0001, 0, 0, 0, 0)
 local CachedLocalGroups = nil
 
 local function matchCat(partName, fullTail)
     local l = string.lower(partName)
-    -- Проверяем Neck перед Head, чтобы NeckHead и сегменты шеи попадали в Neck
     for _, c in ipairs({ "Jaw", "Neck", "Head", "Tail", "Leg", "Body" }) do
         for _, p in ipairs(PartPatterns[c]) do
             if string.find(l, p, 1, true) then
@@ -476,7 +465,8 @@ local function isCritRoot(model, part)
     return ok and ar == part
 end
 
-local function findPart(model, cat)
+-- Строгий поиск ТОЛЬКО нужной части тела (без возврата Body вместо Head!)
+local function findStrictTargetPart(model, cat)
     local c = State.CachedModels[model]
     if c and c[cat] then
         for _, p in ipairs(c[cat]) do
@@ -488,9 +478,13 @@ local function findPart(model, cat)
             return d
         end
     end
-    if (cat == "Jaw" or cat == "Neck") and c and c.Head and c.Head[1] then return c.Head[1] end
-    if c and c.Body and c.Body[1] then return c.Body[1] end
-    return model:FindFirstChild("Head", true)
+    -- Разрешаем взаимозамену только между соседними головными сегментами (Head <-> Jaw/Neck), но НИКОГДА не возвращаем Body/Tail/Leg!
+    if (cat == "Jaw" or cat == "Neck") and c and c.Head and c.Head[1] then
+        return c.Head[1]
+    elseif cat == "Head" and c and c.Jaw and c.Jaw[1] then
+        return c.Jaw[1]
+    end
+    return nil
 end
 
 local function getEnemy(part)
@@ -529,7 +523,6 @@ function Combat.ScanModel(model, isSelf)
             end
         end
 
-        -- Фолбэки, если у конкретного динозавра в модели объединены челюсть/голова/шея
         if #cats.Jaw == 0 and #cats.Head > 0 then
             for _, hp in ipairs(cats.Head) do addUnique("Jaw", hp) end
         elseif #cats.Head == 0 and #cats.Jaw > 0 then
@@ -577,45 +570,81 @@ local function IsCleanBridgePacket(arg1)
     return false
 end
 
-local function ProcessSilentAimTable(tbl, aimCat, depth)
-    if depth > 4 then return false end
+-- Строгий обработчик Silent Aim:
+-- Возвращает: changed (bool), shouldCancelHit (bool)
+-- Если попали во врага НЕ в выбранную часть (например, в Body), пытается переписать и Part, и строковые названия на выбранную часть (например, Head).
+-- Если целевая часть (Head) недоступна или удар летит в тело без возможности замены — блокирует удар (shouldCancelHit = true), чтобы в тело НЕ регало!
+local function ProcessStrictSilentAimTable(tbl, aimCat, depth)
+    if depth > 5 then return false, false end
     local changed = false
-    local lastTargetPart = nil
+    local shouldCancel = false
+    local resolvedTargetPart = nil
+    local hitEnemyModel = nil
 
     for k, v in pairs(tbl) do
         if typeof(v) == "Instance" then
             if v:IsA("BasePart") then
                 local em = getEnemy(v)
                 if em then
-                    local tp = findPart(em, aimCat)
-                    if tp then
-                        tbl[k] = tp
-                        lastTargetPart = tp
-                        changed = true
+                    hitEnemyModel = em
+                    local hitCat = matchCat(v.Name, true)
+                    if hitCat == aimCat then
+                        resolvedTargetPart = v
+                    else
+                        -- Попали не туда (например в Body вместо Head)
+                        local tp = findStrictTargetPart(em, aimCat)
+                        if tp then
+                            tbl[k] = tp
+                            resolvedTargetPart = tp
+                            changed = true
+                        else
+                            -- Если не удалось найти Head, отменяем удар по Body!
+                            shouldCancel = true
+                        end
                     end
                 end
             elseif v:IsA("Model") and not isLocal(v) then
-                local tp = findPart(v, aimCat)
-                if tp then lastTargetPart = tp end
+                hitEnemyModel = v
+                local tp = findStrictTargetPart(v, aimCat)
+                if tp then resolvedTargetPart = tp end
+            elseif v:IsA("Humanoid") and v.Parent and not isLocal(v.Parent) then
+                hitEnemyModel = v.Parent
+                local tp = findStrictTargetPart(v.Parent, aimCat)
+                if tp then resolvedTargetPart = tp end
+            end
+        elseif type(v) == "string" and #v >= 3 and #v <= 24 then
+            -- Если пакет передает название задетой части строкой (например "Body", "Torso", "Tail1")
+            local strCat = matchCat(v, true)
+            if strCat and strCat ~= aimCat then
+                if resolvedTargetPart then
+                    tbl[k] = resolvedTargetPart.Name
+                else
+                    tbl[k] = aimCat
+                end
+                changed = true
             end
         elseif type(v) == "table" then
-            if ProcessSilentAimTable(v, aimCat, depth + 1) then
+            local subChanged, subCancel = ProcessStrictSilentAimTable(v, aimCat, depth + 1)
+            if subChanged then changed = true end
+            if subCancel then shouldCancel = true end
+        end
+    end
+
+    if resolvedTargetPart then
+        for k, v in pairs(tbl) do
+            if typeof(v) == "Vector3" then
+                tbl[k] = resolvedTargetPart.Position
+                changed = true
+            elseif typeof(v) == "CFrame" then
+                tbl[k] = resolvedTargetPart.CFrame
                 changed = true
             end
         end
+    elseif hitEnemyModel and not resolvedTargetPart then
+        shouldCancel = true
     end
 
-    if lastTargetPart then
-        for k, v in pairs(tbl) do
-            if typeof(v) == "Vector3" then
-                tbl[k] = lastTargetPart.Position
-            elseif typeof(v) == "CFrame" then
-                tbl[k] = lastTargetPart.CFrame
-            end
-        end
-    end
-
-    return changed
+    return changed, shouldCancel
 end
 
 if not Env.PriorUI_HookInstalled then
@@ -643,22 +672,44 @@ if not Env.PriorUI_HookInstalled then
 
                 if cs.SilentAim then
                     local modified = false
+                    local cancelAttack = false
                     pcall(function()
                         for i, arg in ipairs(args) do
                             if typeof(arg) == "Instance" and arg:IsA("BasePart") then
                                 local em = getEnemy(arg)
                                 if em then
-                                    local tp = findPart(em, cs.AimTargetPart)
-                                    if tp then args[i] = tp; modified = true end
+                                    local hitCat = matchCat(arg.Name, true)
+                                    if hitCat ~= cs.AimTargetPart then
+                                        local tp = findStrictTargetPart(em, cs.AimTargetPart)
+                                        if tp then
+                                            args[i] = tp
+                                            modified = true
+                                        else
+                                            cancelAttack = true
+                                        end
+                                    end
                                 end
-                            elseif type(arg) == "table" then
-                                if ProcessSilentAimTable(arg, cs.AimTargetPart, 1) then
+                            elseif type(arg) == "string" and #arg >= 3 and #arg <= 24 then
+                                local strCat = matchCat(arg, true)
+                                if strCat and strCat ~= cs.AimTargetPart then
+                                    args[i] = cs.AimTargetPart
                                     modified = true
                                 end
+                            elseif type(arg) == "table" then
+                                local subMod, subCancel = ProcessStrictSilentAimTable(arg, cs.AimTargetPart, 1)
+                                if subMod then modified = true end
+                                if subCancel then cancelAttack = true end
                             end
                         end
                     end)
-                    if modified then return old(self, table.unpack(args)) end
+
+                    -- Если включен строгий режим и удар пришелся в тело без возможности перенаправления в цель — блокируем пакет, чтобы в тело НЕ регало!
+                    if cancelAttack and cs.StrictCancelNonTarget then
+                        return nil
+                    end
+                    if modified then
+                        return old(self, table.unpack(args))
+                    end
                 end
             end
             return old(self, ...)
@@ -667,57 +718,98 @@ if not Env.PriorUI_HookInstalled then
     end)
 end
 
+-- Функции мгновенного восстановления только тех деталей, которые реально менялись (экономия CPU на планшете)
+function Combat.RestoreEnemyParts()
+    for p, o in pairs(State.OriginalParts) do
+        pcall(function()
+            if p and p.Parent then
+                p.Size = o.Size; p.Transparency = o.Transparency; p.CanCollide = o.CanCollide
+                p.CanQuery = o.CanQuery; p.CanTouch = o.CanTouch; p.Massless = o.Massless
+                p.CustomPhysicalProperties = o.CustomPhysicalProperties; p.RootPriority = o.RootPriority
+            end
+        end)
+    end
+    table.clear(State.OriginalParts)
+    State.NeedsEnemyRestore = false
+end
+
+function Combat.RestoreLocalParts()
+    for p, o in pairs(State.LocalOriginalParts) do
+        pcall(function()
+            if p and p.Parent then
+                p.Size = o.Size; p.Transparency = o.Transparency
+                if State.SaveDinoPhase == "idle" then p.CanCollide = o.CanCollide end
+                p.CanQuery = o.CanQuery; p.CanTouch = o.CanTouch; p.Massless = o.Massless
+                p.CustomPhysicalProperties = o.CustomPhysicalProperties; p.RootPriority = o.RootPriority
+            end
+        end)
+    end
+    table.clear(State.LocalOriginalParts)
+    State.NeedsLocalRestore = false
+end
+
+function Combat.RestoreAll()
+    Combat.RestoreEnemyParts()
+    Combat.RestoreLocalParts()
+end
+
 function Combat.Init()
+    -- 1. Фоновое сканирование моделей раз в 1.5 сек (0 нагрузки на мобильный процессор)
     task.spawn(function()
         while State.Active do
             pcall(function()
-                local nc = {}
-                for _, p in ipairs(Players:GetPlayers()) do
-                    if p ~= LocalPlayer and p.Character then
-                        nc[p.Character] = Combat.ScanModel(p.Character, false)
+                if State.HitboxMaster or State.SilentAim then
+                    local nc = {}
+                    for _, p in ipairs(Players:GetPlayers()) do
+                        if p ~= LocalPlayer and p.Character then
+                            nc[p.Character] = Combat.ScanModel(p.Character, false)
+                        end
+                    end
+                    State.CachedModels = nc
+                end
+
+                if State.ReachEnabled then
+                    local myChar = LocalPlayer.Character
+                    if myChar then
+                        CachedLocalGroups = Combat.ScanModel(myChar, true)
+                    else
+                        CachedLocalGroups = nil
                     end
                 end
-                State.CachedModels = nc
-
-                local myChar = LocalPlayer.Character
-                if myChar then
-                    CachedLocalGroups = Combat.ScanModel(myChar, true)
-                else
-                    CachedLocalGroups = nil
-                end
             end)
-            task.wait(1.2)
+            task.wait(1.5)
         end
     end)
 
+    -- 2. Легкий цикл удержания (каждые 0.08 сек = 12.5 раз в сек, обрабатывает ТОЛЬКО нужные детали)
     local lastApply = 0
     Utils.Track(RunService.Heartbeat:Connect(function()
         if not State.Active then return end
         local now = os.clock()
-        if (now - lastApply) < 0.03 then return end
+        if (now - lastApply) < 0.08 then return end
         lastApply = now
 
-        -- 1. Вражеские Хитбоксы (Мульти-выбор: Голова, Шея, Челюсть, Тело, Хвост, Ноги)
-        if State.HitboxMaster or next(State.OriginalParts) ~= nil then
+        if State.NeedsEnemyRestore then Combat.RestoreEnemyParts() end
+        if State.NeedsLocalRestore then Combat.RestoreLocalParts() end
+
+        -- А) Обработка врагов: Hitbox Expander + Строгая изоляция цели Silent Aim
+        -- Если включен Silent Aim с фильтрацией, у всех НЕцелевых частей тела врага (например, Body/Tail) отключается CanTouch/CanQuery,
+        -- чтобы твои укусы физически не могли зарегать попадание в тело и летели ТОЛЬКО в выбранную часть (например, Head)!
+        if State.HitboxMaster or (State.SilentAim and State.StrictCancelNonTarget) then
             local tSize = HitboxSizes[State.HitboxSizeLevel] or 25
+            local aimCat = State.AimTargetPart
+
             for model, groups in pairs(State.CachedModels) do
                 if model and model.Parent and not isLocal(model) then
-                    local activeMap = {}
-                    if State.HitboxMaster then
-                        for cat, parts in pairs(groups) do
-                            if State.EnemyHitboxParts[cat] == true then
-                                for _, part in ipairs(parts) do
-                                    activeMap[part] = true
-                                end
-                            end
-                        end
-                    end
+                    for cat, parts in pairs(groups) do
+                        local expandThisCat = State.HitboxMaster and (State.EnemyHitboxParts[cat] == true)
+                        local isAimTargetCat = State.SilentAim and (cat == aimCat)
+                        local disableNonTargetTouch = State.SilentAim and State.StrictCancelNonTarget and (not isAimTargetCat) and (not expandThisCat)
 
-                    for _, parts in pairs(groups) do
-                        for _, part in ipairs(parts) do
-                            if part and part.Parent and not isCritRoot(model, part) then
-                                local o = State.OriginalParts[part]
-                                if activeMap[part] then
+                        if expandThisCat or isAimTargetCat or disableNonTargetTouch then
+                            for idx, part in ipairs(parts) do
+                                if part and part.Parent and not isCritRoot(model, part) then
+                                    local o = State.OriginalParts[part]
                                     if not o then
                                         o = {
                                             Size = part.Size, Transparency = part.Transparency, CanCollide = part.CanCollide,
@@ -726,24 +818,26 @@ function Combat.Init()
                                         }
                                         State.OriginalParts[part] = o
                                     end
-                                    part.Massless = true
-                                    part.CanCollide = false
-                                    part.CustomPhysicalProperties = ZP
-                                    part.RootPriority = -127
-                                    part.Size = GetProportionalSize(o.Size, tSize)
-                                    part.Transparency = State.HitboxTransparency
-                                    part.CanTouch = true
-                                    part.CanQuery = true
-                                elseif o then
-                                    part.Size = o.Size
-                                    part.Transparency = o.Transparency
-                                    part.CanCollide = o.CanCollide
-                                    part.Massless = o.Massless
-                                    part.CanTouch = o.CanTouch
-                                    part.CanQuery = o.CanQuery
-                                    part.CustomPhysicalProperties = o.CustomPhysicalProperties
-                                    part.RootPriority = o.RootPriority
-                                    State.OriginalParts[part] = nil
+
+                                    if expandThisCat and idx <= 6 then
+                                        part.Massless = true
+                                        part.CanCollide = false
+                                        part.CustomPhysicalProperties = ZP
+                                        part.RootPriority = -127
+                                        part.Size = GetProportionalSize(o.Size, tSize)
+                                        part.Transparency = State.HitboxTransparency
+                                        part.CanTouch = true
+                                        part.CanQuery = true
+                                    elseif disableNonTargetTouch then
+                                        -- Отключаем регистрацию укусов по телу/хвосту/ногам, если в Silent Aim выбрана Голова!
+                                        part.Size = o.Size
+                                        part.Transparency = o.Transparency
+                                        part.CanTouch = false
+                                        part.CanQuery = false
+                                    elseif isAimTargetCat then
+                                        part.CanTouch = true
+                                        part.CanQuery = true
+                                    end
                                 end
                             end
                         end
@@ -752,55 +846,33 @@ function Combat.Init()
             end
         end
 
-        -- 2. Локальный Reach (Мульти-выбор + Шея)
-        local myChar = LocalPlayer.Character
-        if myChar and myChar.Parent and CachedLocalGroups and (State.ReachEnabled or next(State.LocalOriginalParts) ~= nil) then
-            local targetRange = ReachRanges[State.ReachScaleLevel] or 22
-            local activeReachParts = {}
-
-            if State.ReachEnabled then
+        -- Б) Локальный Reach (трогает ТОЛЬКО включенные галочки ReachParts)
+        if State.ReachEnabled and CachedLocalGroups then
+            local myChar = LocalPlayer.Character
+            if myChar and myChar.Parent then
+                local targetRange = ReachRanges[State.ReachScaleLevel] or 22
                 for cat, parts in pairs(CachedLocalGroups) do
                     if State.ReachParts[cat] == true then
                         for _, part in ipairs(parts) do
-                            activeReachParts[part] = true
-                        end
-                    end
-                end
-            end
-
-            for _, parts in pairs(CachedLocalGroups) do
-                for _, part in ipairs(parts) do
-                    if part and part.Parent and not isCritRoot(myChar, part) then
-                        local orig = State.LocalOriginalParts[part]
-                        if activeReachParts[part] then
-                            if not orig then
-                                orig = {
-                                    Size = part.Size, Transparency = part.Transparency, CanCollide = part.CanCollide,
-                                    CanQuery = part.CanQuery, CanTouch = part.CanTouch, Massless = part.Massless,
-                                    CustomPhysicalProperties = part.CustomPhysicalProperties, RootPriority = part.RootPriority
-                                }
-                                State.LocalOriginalParts[part] = orig
+                            if part and part.Parent and not isCritRoot(myChar, part) then
+                                local orig = State.LocalOriginalParts[part]
+                                if not orig then
+                                    orig = {
+                                        Size = part.Size, Transparency = part.Transparency, CanCollide = part.CanCollide,
+                                        CanQuery = part.CanQuery, CanTouch = part.CanTouch, Massless = part.Massless,
+                                        CustomPhysicalProperties = part.CustomPhysicalProperties, RootPriority = part.RootPriority
+                                    }
+                                    State.LocalOriginalParts[part] = orig
+                                end
+                                part.Massless = true
+                                part.CanCollide = false
+                                part.CustomPhysicalProperties = ZP
+                                part.RootPriority = -127
+                                part.Size = GetProportionalSize(orig.Size, targetRange)
+                                part.Transparency = State.ReachTransparency
+                                part.CanTouch = true
+                                part.CanQuery = true
                             end
-                            part.Massless = true
-                            part.CanCollide = false
-                            part.CustomPhysicalProperties = ZP
-                            part.RootPriority = -127
-                            part.Size = GetProportionalSize(orig.Size, targetRange)
-                            part.Transparency = State.ReachTransparency
-                            part.CanTouch = true
-                            part.CanQuery = true
-                        elseif orig then
-                            part.Size = orig.Size
-                            part.Transparency = orig.Transparency
-                            if State.SaveDinoPhase == "idle" then
-                                part.CanCollide = orig.CanCollide
-                            end
-                            part.Massless = orig.Massless
-                            part.CanTouch = orig.CanTouch
-                            part.CanQuery = orig.CanQuery
-                            part.CustomPhysicalProperties = orig.CustomPhysicalProperties
-                            part.RootPriority = orig.RootPriority
-                            State.LocalOriginalParts[part] = nil
                         end
                     end
                 end
@@ -827,26 +899,12 @@ function Combat.Init()
                     end
                 end)
             end
-            task.wait(0.1)
+            task.wait(0.12)
         end
     end)
 end
 
-function Combat.RestoreAll()
-    for p, o in pairs(State.OriginalParts) do
-        pcall(function()
-            if p and p.Parent then p.Size = o.Size; p.Transparency = o.Transparency; p.CanCollide = o.CanCollide; p.CanQuery = o.CanQuery; p.CanTouch = o.CanTouch; p.Massless = o.Massless; p.CustomPhysicalProperties = o.CustomPhysicalProperties; p.RootPriority = o.RootPriority end
-        end)
-    end
-    for p, o in pairs(State.LocalOriginalParts) do
-        pcall(function()
-            if p and p.Parent then p.Size = o.Size; p.Transparency = o.Transparency; p.CanCollide = o.CanCollide; p.CanQuery = o.CanQuery; p.CanTouch = o.CanTouch; p.Massless = o.Massless; p.CustomPhysicalProperties = o.CustomPhysicalProperties; p.RootPriority = o.RootPriority end
-        end)
-    end
-    table.clear(State.OriginalParts); table.clear(State.LocalOriginalParts)
-end
-
--- 7. ESP
+-- 7. ESP (Ультра-легкий цикл для мобилок и планшетов)
 local ESPModule = {}
 local espGuis, worldGuis, trackedWorld, stamTrack, headCache, speciesCache = {}, {}, {}, {}, {}, {}
 local worldScanDone, worldScanning = false, false
@@ -911,7 +969,7 @@ local ExactSpeciesKeys = {
 
 local function GetDinoSpeciesName(player, model)
     if not model then return nil end
-    if speciesCache[model] and (os.clock() - speciesCache[model].time) < 4.0 then
+    if speciesCache[model] and (os.clock() - speciesCache[model].time) < 5.0 then
         return speciesCache[model].name
     end
 
@@ -1102,7 +1160,7 @@ function ESPModule.ScanWorldItems()
             for _, child in ipairs(ch) do
                 if not State.Active then return end
                 count = count + 1
-                if count % 250 == 0 then task.wait() end
+                if count % 200 == 0 then task.wait() end
                 if child ~= Workspace.Terrain and not IsPartOfPlayerCharacter(child) then
                     TryRegisterWorldObject(child)
                     local cn = string.lower(child.Name)
@@ -1136,7 +1194,7 @@ function ESPModule.Init()
             pcall(function()
                 local myPos = GetMyPosition()
                 if not State.ESPEnabled then
-                    for _, data in pairs(espGuis) do if data.gui then data.gui.Enabled = false end end
+                    for _, data in pairs(espGuis) do if data.gui and data.gui.Enabled then data.gui.Enabled = false end end
                 else
                     for _, player in ipairs(Players:GetPlayers()) do
                         if player ~= LocalPlayer then
@@ -1239,10 +1297,10 @@ function ESPModule.Init()
                         end
                     end
                 else
-                    for _, gData in pairs(worldGuis) do if gData.gui then gData.gui.Enabled = false end end
+                    for _, gData in pairs(worldGuis) do if gData.gui and gData.gui.Enabled then gData.gui.Enabled = false end end
                 end
             end)
-            task.wait(0.25)
+            task.wait(0.28)
         end
     end)
 end
@@ -1287,37 +1345,53 @@ end
 local CombatPage = CreateTab("Combat"); local RenderPage = CreateTab("Render"); local ToolsPage = CreateTab("Tools")
 
 -- Вкладка Combat: Reach (Мульти-выбор + Шея)
-CreateToggle(CombatPage, "Reach (Дальность + Форма частей тела)", State.ReachEnabled, 1, function(v) State.ReachEnabled = v end)
+CreateToggle(CombatPage, "Reach (Дальность + Форма частей тела)", State.ReachEnabled, 1, function(v)
+    State.ReachEnabled = v
+    if not v then State.NeedsLocalRestore = true end
+end)
 CreateCycleButton(CombatPage, "Дистанция / Форма Reach", ReachLabels, State.ReachScaleLevel, 2, function(_, idx) State.ReachScaleLevel = idx end)
 CreateCycleButton(CombatPage, "Прозрачность Reach", TransLabels, State.ReachTransLevel, 3, function(_, idx)
     State.ReachTransLevel = idx
     State.ReachTransparency = TransValues[idx] or 0.75
 end)
-CreateToggle(CombatPage, "[Reach] Челюсть / Укус (Jaw)", State.ReachParts.Jaw, 4, function(v) State.ReachParts.Jaw = v end)
-CreateToggle(CombatPage, "[Reach] Голова (Head)", State.ReachParts.Head, 5, function(v) State.ReachParts.Head = v end)
-CreateToggle(CombatPage, "[Reach] Шея (Neck)", State.ReachParts.Neck, 6, function(v) State.ReachParts.Neck = v end)
-CreateToggle(CombatPage, "[Reach] Весь Хвост (Full Tail)", State.ReachParts.Tail, 7, function(v) State.ReachParts.Tail = v end)
-CreateToggle(CombatPage, "[Reach] Ноги и Лапы (Legs)", State.ReachParts.Leg, 8, function(v) State.ReachParts.Leg = v end)
-CreateToggle(CombatPage, "[Reach] Тело (Body)", State.ReachParts.Body, 9, function(v) State.ReachParts.Body = v end)
+CreateToggle(CombatPage, "[Reach] Челюсть / Укус (Jaw)", State.ReachParts.Jaw, 4, function(v) State.ReachParts.Jaw = v; State.NeedsLocalRestore = true end)
+CreateToggle(CombatPage, "[Reach] Голова (Head)", State.ReachParts.Head, 5, function(v) State.ReachParts.Head = v; State.NeedsLocalRestore = true end)
+CreateToggle(CombatPage, "[Reach] Шея (Neck)", State.ReachParts.Neck, 6, function(v) State.ReachParts.Neck = v; State.NeedsLocalRestore = true end)
+CreateToggle(CombatPage, "[Reach] Весь Хвост (Full Tail)", State.ReachParts.Tail, 7, function(v) State.ReachParts.Tail = v; State.NeedsLocalRestore = true end)
+CreateToggle(CombatPage, "[Reach] Ноги и Лапы (Legs)", State.ReachParts.Leg, 8, function(v) State.ReachParts.Leg = v; State.NeedsLocalRestore = true end)
+CreateToggle(CombatPage, "[Reach] Тело (Body)", State.ReachParts.Body, 9, function(v) State.ReachParts.Body = v; State.NeedsLocalRestore = true end)
 
--- Silent Aim (Тоже с выбором Шеи)
-CreateToggle(CombatPage, "Silent Aim", State.SilentAim, 10, function(v) State.SilentAim = v end)
-CreateCycleButton(CombatPage, "Цель Silent Aim", { "Head", "Neck", "Jaw", "Body", "Tail", "Leg" }, 1, 11, function(opt) State.AimTargetPart = opt end)
+-- Строгий Silent Aim (регает ТОЛЬКО в выбранную часть тела, отменяя попадания в тело)
+CreateToggle(CombatPage, "Silent Aim (Строгий: только в цель)", State.SilentAim, 10, function(v)
+    State.SilentAim = v
+    State.NeedsEnemyRestore = true
+end)
+CreateCycleButton(CombatPage, "Цель Silent Aim", { "Head", "Neck", "Jaw", "Body", "Tail", "Leg" }, 1, 11, function(opt)
+    State.AimTargetPart = opt
+    State.NeedsEnemyRestore = true
+end)
+CreateToggle(CombatPage, "Не регать урон мимо цели Silent Aim", State.StrictCancelNonTarget, 12, function(v)
+    State.StrictCancelNonTarget = v
+    State.NeedsEnemyRestore = true
+end)
 
--- Enemy Hitbox Expander (Теперь с мульти-выбором и Шеей!)
-CreateToggle(CombatPage, "Enemy Hitbox Expander (Враги)", State.HitboxMaster, 12, function(v) State.HitboxMaster = v end)
-CreateCycleButton(CombatPage, "Размер Хитбокса Врага", { "1 (12)", "2 (18)", "3 (25)", "4 (32)", "5 (42)" }, State.HitboxSizeLevel, 13, function(_, idx) State.HitboxSizeLevel = idx end)
-CreateCycleButton(CombatPage, "Прозрачность Хитбокса Врага", TransLabels, State.HitboxTransLevel, 14, function(_, idx)
+-- Enemy Hitbox Expander (Мульти-выбор + Шея)
+CreateToggle(CombatPage, "Enemy Hitbox Expander (Враги)", State.HitboxMaster, 13, function(v)
+    State.HitboxMaster = v
+    State.NeedsEnemyRestore = true
+end)
+CreateCycleButton(CombatPage, "Размер Хитбокса Врага", { "1 (12)", "2 (18)", "3 (25)", "4 (32)", "5 (42)" }, State.HitboxSizeLevel, 14, function(_, idx) State.HitboxSizeLevel = idx end)
+CreateCycleButton(CombatPage, "Прозрачность Хитбокса Врага", TransLabels, State.HitboxTransLevel, 15, function(_, idx)
     State.HitboxTransLevel = idx
     State.HitboxTransparency = TransValues[idx] or 0.75
 end)
-CreateToggle(CombatPage, "[Hitbox Врага] Голова (Head)", State.EnemyHitboxParts.Head, 15, function(v) State.EnemyHitboxParts.Head = v end)
-CreateToggle(CombatPage, "[Hitbox Врага] Шея (Neck)", State.EnemyHitboxParts.Neck, 16, function(v) State.EnemyHitboxParts.Neck = v end)
-CreateToggle(CombatPage, "[Hitbox Врага] Челюсть (Jaw)", State.EnemyHitboxParts.Jaw, 17, function(v) State.EnemyHitboxParts.Jaw = v end)
-CreateToggle(CombatPage, "[Hitbox Врага] Тело / Торс (Body)", State.EnemyHitboxParts.Body, 18, function(v) State.EnemyHitboxParts.Body = v end)
-CreateToggle(CombatPage, "[Hitbox Врага] Хвост (Tail)", State.EnemyHitboxParts.Tail, 19, function(v) State.EnemyHitboxParts.Tail = v end)
-CreateToggle(CombatPage, "[Hitbox Врага] Ноги / Лапы (Legs)", State.EnemyHitboxParts.Leg, 20, function(v) State.EnemyHitboxParts.Leg = v end)
-CreateToggle(CombatPage, "No Attack CD", State.NoAttackCD, 21, function(v) State.NoAttackCD = v end)
+CreateToggle(CombatPage, "[Hitbox Врага] Голова (Head)", State.EnemyHitboxParts.Head, 16, function(v) State.EnemyHitboxParts.Head = v; State.NeedsEnemyRestore = true end)
+CreateToggle(CombatPage, "[Hitbox Врага] Шея (Neck)", State.EnemyHitboxParts.Neck, 17, function(v) State.EnemyHitboxParts.Neck = v; State.NeedsEnemyRestore = true end)
+CreateToggle(CombatPage, "[Hitbox Врага] Челюсть (Jaw)", State.EnemyHitboxParts.Jaw, 18, function(v) State.EnemyHitboxParts.Jaw = v; State.NeedsEnemyRestore = true end)
+CreateToggle(CombatPage, "[Hitbox Врага] Тело / Торс (Body)", State.EnemyHitboxParts.Body, 19, function(v) State.EnemyHitboxParts.Body = v; State.NeedsEnemyRestore = true end)
+CreateToggle(CombatPage, "[Hitbox Врага] Хвост (Tail)", State.EnemyHitboxParts.Tail, 20, function(v) State.EnemyHitboxParts.Tail = v; State.NeedsEnemyRestore = true end)
+CreateToggle(CombatPage, "[Hitbox Врага] Ноги / Лапы (Legs)", State.EnemyHitboxParts.Leg, 21, function(v) State.EnemyHitboxParts.Leg = v; State.NeedsEnemyRestore = true end)
+CreateToggle(CombatPage, "No Attack CD", State.NoAttackCD, 22, function(v) State.NoAttackCD = v end)
 
 -- Вкладка Render
 CreateToggle(RenderPage, "Unlock Camera (Отдаление без лимита)", State.UnlockCamera, 1, function(v) State.UnlockCamera = v end)
