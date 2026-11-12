@@ -1,11 +1,10 @@
--- Prior Extinction // APEX-HALLOWEEN (v1.2 Bugfix Edition)
--- Fixed:
--- 1. Dead bots immediately disappear from ESP & Combat (checks Attribute Health <= 0, Dead flags & Humanoid)
--- 2. Fixed duplicate/double ESP on a single bot (ignores nested sub-models inside a dinosaur)
--- 3. Fixed Hitbox Expander reliability on bots (auto-rescans streamed parts & fixed AssemblyRootPart block)
--- 4. Clean Pumpkin ESP (ignores spawn points, triggers & trees)
+-- Prior Extinction // APEX-HALLOWEEN (v1.3 - 4 Pumpkin Types ESP + Universal Bot Hitbox Expander)
+-- New in v1.3:
+-- 1. 4 Pumpkin Types Detection (Normal/Orange, Yellow, Green, White) by Name, Attributes & 3D Color3/HSV + Individual Toggles
+-- 2. Fixed Bot Hitbox Expander working on ALL dinosaur rigs (removed PrimaryPart block on bots + geometric Head/Neck fallback)
+-- 3. Instant dead bot cleanup & zero-lag mobile/tablet loop
 
-print("[Apex-Halloween] Запуск проверенной версии v1.2 (Все ошибки исправлены)...")
+print("[Apex-Halloween] Запуск версии v1.3 (4 вида тыкв + Универсальный Hitbox Expander)...")
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -72,14 +71,22 @@ local State = {
         Body = false,
     },
 
-    -- Render & Halloween ESP
+    -- Render & Halloween ESP (4 вида тыкв)
     UnlockCamera = false,
     BotESPEnabled = true,
     BotESPMaxDistance = 2500,
     ESP_BotSpecies = true,
     ESP_BotHealth = true,
+
     ESPPumpkins = true,
+    PumpkinTypes = {
+        Normal = true, -- Обычная (оранжевая)
+        Yellow = true, -- Жёлтая
+        Green = true,  -- Зелёная
+        White = true,  -- Белая
+    },
     PumpkinESPMaxDistance = 3500,
+
     ESPBones = false,
     ESPCorpses = false,
     WorldESPMaxDistance = 2500,
@@ -144,12 +151,12 @@ local TransValues = { 0.2, 0.5, 0.75, 0.9, 1.0 }
 local TransLabels = { "0.2 (Яркий)", "0.5 (Средний)", "0.75 (Слабый)", "0.9 (Почти невид.)", "1.0 (Невидимый)" }
 
 local PartPatterns = {
-    Jaw = { "jaw", "mandible", "snout", "mouth", "bite", "muzzle", "beak", "fang", "teeth" },
-    Head = { "head", "skull", "cranium", "horn", "crest", "frill" },
-    Neck = { "neck", "throat", "cervical", "gullet" },
-    Tail = { "tail", "thago", "club", "rattle", "spike", "fluke" },
-    Leg = { "leg", "thigh", "calf", "shin", "foot", "ankle", "claw", "arm", "hand", "forelimb", "toe", "wing", "talon" },
-    Body = { "chest", "ribcage", "abdomen", "bodyhitbox", "hitboxbody", "upperbody", "spine", "torso", "body", "pelvis", "hip", "back", "stomach", "flank", "belly", "shoulder", "rump" },
+    Jaw = { "jaw", "mandible", "snout", "mouth", "bite", "muzzle", "beak", "fang", "teeth", "rostrum", "chin" },
+    Head = { "head", "skull", "cranium", "horn", "crest", "frill", "face", "brain", "eye", "brow" },
+    Neck = { "neck", "throat", "cervical", "gullet", "nape", "collar" },
+    Tail = { "tail", "thago", "club", "rattle", "spike", "fluke", "caudal" },
+    Leg = { "leg", "thigh", "calf", "shin", "foot", "ankle", "claw", "arm", "hand", "forelimb", "hindlimb", "toe", "wing", "talon", "femur", "tibia", "humerus", "radius", "knee", "wrist" },
+    Body = { "chest", "ribcage", "abdomen", "bodyhitbox", "hitboxbody", "upperbody", "spine", "torso", "body", "pelvis", "hip", "back", "stomach", "flank", "belly", "shoulder", "rump", "thorax" },
 }
 
 -- ============================================================================
@@ -277,7 +284,7 @@ local function ExtractNumber(v)
 end
 
 -- ============================================================================
--- 3. HEALTH & DEAD CHECK HELPER (SHARED BY COMBAT & ESP)
+-- 3. HEALTH & DEAD CHECK HELPER
 -- ============================================================================
 local function GetBotHealth(model)
     if not model or not model.Parent then
@@ -822,7 +829,7 @@ function SaveDino.Init()
 end
 
 -- ============================================================================
--- 6. ZOMBIE BOT SCANNER & STABLE COMBAT MODULE
+-- 6. UNIVERSAL ZOMBIE BOT SCANNER & COMBAT MODULE
 -- ============================================================================
 local Combat = {}
 local ZP = PhysicalProperties.new(0.0001, 0, 0, 0, 0)
@@ -836,12 +843,26 @@ local IgnoredMapFolders = {
     terrain = true, props = true, buildings = true, effects = true,
 }
 
-local function matchCat(partName)
-    local l = string.lower(partName)
+local function matchCat(part)
+    local l = string.lower(part.Name)
     for _, c in ipairs({ "Jaw", "Neck", "Head", "Tail", "Leg", "Body" }) do
         for _, p in ipairs(PartPatterns[c]) do
             if string.find(l, p, 1, true) then
                 return c
+            end
+        end
+    end
+    -- Проверяем также имя родительской модели/папки, если это не общая папка Hitboxes
+    local parent = part.Parent
+    if parent and parent ~= Workspace then
+        local pl = string.lower(parent.Name)
+        if pl ~= "hitboxes" and pl ~= "parts" and pl ~= "rig" and pl ~= "model" then
+            for _, c in ipairs({ "Jaw", "Neck", "Head", "Tail", "Leg", "Body" }) do
+                for _, p in ipairs(PartPatterns[c]) do
+                    if string.find(pl, p, 1, true) then
+                        return c
+                    end
+                end
             end
         end
     end
@@ -861,17 +882,20 @@ local function isRealPlayerCharacter(m)
     return false, nil
 end
 
--- Исправленный isCritRoot: для локального игрока бережет AssemblyRootPart,
--- а для ботов блокирует только HumanoidRootPart/RootPart, чтобы не мешать увеличению головы/тела бота!
+-- ВАЖНЫЙ ФИКС: Для ботов НЕ блокируем model.PrimaryPart, так как у многих ботов PrimaryPart = Head или Torso!
+-- Блокируем только технические невидимые корни (HumanoidRootPart / RootPart / Root).
 local function isCritRoot(model, part, isSelf)
     if not part or not model then
         return true
     end
     local l = string.lower(part.Name)
-    if l == "humanoidrootpart" or l == "rootpart" or l == "root" or l == "primary" or model.PrimaryPart == part then
+    if l == "humanoidrootpart" or l == "rootpart" or l == "root" or l == "primary" then
         return true
     end
     if isSelf then
+        if model.PrimaryPart == part then
+            return true
+        end
         local ok, ar = pcall(function()
             return part.AssemblyRootPart
         end)
@@ -890,7 +914,6 @@ local function IsZombieBotModel(model)
         return false
     end
 
-    -- Исключаем вложенные под-модели внутри другого динозавра (чтобы не было двойного ESP на одном боте!)
     local parentModel = model:FindFirstAncestorOfClass("Model")
     if parentModel and parentModel ~= Workspace then
         if parentModel:FindFirstChildOfClass("Humanoid") or parentModel:FindFirstChild("Hitboxes") or parentModel:FindFirstChildOfClass("AnimationController") then
@@ -916,7 +939,6 @@ local function IsZombieBotModel(model)
         return false
     end
 
-    -- Проверяем реальное здоровье (включая атрибуты Health/HP <= 0)
     local _, _, isDead = GetBotHealth(model)
     if isDead then
         return false
@@ -928,7 +950,7 @@ local function IsZombieBotModel(model)
 
     local hasAnim = model:FindFirstChildOfClass("AnimationController") ~= nil
     if hasAnim then
-        if model:FindFirstChild("Head", true) or model:FindFirstChild("HumanoidRootPart", true) or model:FindFirstChild("RootPart", true) then
+        if model:FindFirstChild("Head", true) or model:FindFirstChild("HumanoidRootPart", true) or model:FindFirstChild("RootPart", true) or model:FindFirstChildWhichIsA("BasePart", true) then
             return true
         end
     end
@@ -982,6 +1004,8 @@ local function findStrictTargetPartFast(model, cat)
         return c.Head[1]
     elseif cat == "Head" and c.Jaw and c.Jaw[1] then
         return c.Jaw[1]
+    elseif c.Body and c.Body[1] then
+        return c.Body[1]
     end
     return nil
 end
@@ -1020,9 +1044,11 @@ local function getClosestEnemyBot()
     return bestModel
 end
 
+-- Универсальный сканер частей тела динозавра (с геометрическим распознаванием для нестандартных ботов!)
 function Combat.ScanModel(model, isSelf)
     local cats = { Head = {}, Neck = {}, Jaw = {}, Body = {}, Tail = {}, Leg = {}, TotalParts = 0 }
     local added = { Head = {}, Neck = {}, Jaw = {}, Body = {}, Tail = {}, Leg = {} }
+    local unmatchedParts = {}
 
     local function addUnique(cat, part)
         if cats[cat] and not added[cat][part] then
@@ -1037,16 +1063,20 @@ function Combat.ScanModel(model, isSelf)
     end
 
     pcall(function()
+        local hitboxFolder = model:FindFirstChild("Hitboxes")
         for _, d in ipairs(model:GetDescendants()) do
             if d:IsA("BasePart") and not isCritRoot(model, d, isSelf) then
                 if not isSelf then
                     PartToEnemyModel[d] = model
                 end
-                local c = matchCat(d.Name)
+                local c = matchCat(d)
                 if c and cats[c] then
                     addUnique(c, d)
                 elseif not isSelf then
-                    addUnique("Body", d)
+                    -- Если деталь лежит в папке Hitboxes или имеет боевой размер, сохраняем для геометрической классификации
+                    if (hitboxFolder and d:IsDescendantOf(hitboxFolder)) or d:FindFirstChildOfClass("TouchTransmitter") or d.CanQuery or d.CanTouch then
+                        table.insert(unmatchedParts, d)
+                    end
                 end
 
                 if isSelf and d:FindFirstChildOfClass("TouchTransmitter") then
@@ -1055,6 +1085,59 @@ function Combat.ScanModel(model, isSelf)
             end
         end
 
+        -- ГЕОМЕТРИЧЕСКИЙ АНАЛИЗАТОР (Для динозавров-ботов с нестандартными названиями хитбоксов, например Hitbox1, Box, Part):
+        -- Сортируем неопознанные хитбоксы вдоль направления взгляда (LookVector) динозавра от носа к хвосту!
+        if not isSelf and #unmatchedParts > 0 then
+            local refCF = nil
+            local root = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("RootPart") or model.PrimaryPart
+            if root then
+                refCF = root.CFrame
+            else
+                local okPv, pv = pcall(function()
+                    return model:GetPivot()
+                end)
+                if okPv then
+                    refCF = pv
+                end
+            end
+
+            if refCF and #cats.Head == 0 then
+                table.sort(unmatchedParts, function(a, b)
+                    local relA = refCF:PointToObjectSpace(a.Position)
+                    local relB = refCF:PointToObjectSpace(b.Position)
+                    -- В Roblox вперед — это отрицательная ось Z (-Z), плюс учитываем высоту Y для головы/шеи
+                    local scoreA = (-relA.Z) + (relA.Y * 0.45)
+                    local scoreB = (-relB.Z) + (relB.Y * 0.45)
+                    return scoreA > scoreB
+                end)
+
+                local totalUnmatched = #unmatchedParts
+                for idx, pt in ipairs(unmatchedParts) do
+                    if idx == 1 then
+                        addUnique("Head", pt)
+                        addUnique("Jaw", pt)
+                    elseif idx == 2 and totalUnmatched >= 3 then
+                        addUnique("Neck", pt)
+                        addUnique("Head", pt)
+                    elseif idx == totalUnmatched and totalUnmatched >= 4 then
+                        addUnique("Tail", pt)
+                    else
+                        addUnique("Body", pt)
+                    end
+                end
+            else
+                for _, pt in ipairs(unmatchedParts) do
+                    addUnique("Body", pt)
+                end
+            end
+        end
+
+        -- Гарантируем, что ни одна из основных категорий (Head, Neck, Jaw, Body) не останется пустой
+        if #cats.Head == 0 and #cats.Neck > 0 then
+            for _, np in ipairs(cats.Neck) do
+                addUnique("Head", np)
+            end
+        end
         if #cats.Jaw == 0 and #cats.Head > 0 then
             for _, hp in ipairs(cats.Head) do
                 addUnique("Jaw", hp)
@@ -1067,6 +1150,14 @@ function Combat.ScanModel(model, isSelf)
         if #cats.Neck == 0 and #cats.Head > 0 then
             for _, hp in ipairs(cats.Head) do
                 addUnique("Neck", hp)
+            end
+        end
+        -- Если у бота вообще всего 1-2 общих хитбокса в Body, дублируем их в Head и Neck, чтобы Hitbox Expander сработал 100%!
+        if #cats.Head == 0 and #cats.Body > 0 then
+            for i = 1, math.min(2, #cats.Body) do
+                addUnique("Head", cats.Body[i])
+                addUnique("Neck", cats.Body[i])
+                addUnique("Jaw", cats.Body[i])
             end
         end
     end)
@@ -1131,7 +1222,7 @@ local function TryPatchSilentAimTable(tbl, aimCat, depth)
             if v:IsA("BasePart") then
                 local em = getEnemyModelFromPart(v)
                 if em then
-                    local hitCat = PartToCategory[v] or matchCat(v.Name) or "Body"
+                    local hitCat = PartToCategory[v] or matchCat(v) or "Body"
                     if hitCat == aimCat then
                         targetPart = v
                     else
@@ -1157,7 +1248,19 @@ local function TryPatchSilentAimTable(tbl, aimCat, depth)
                 end
             end
         elseif tv == "string" and #v >= 3 and #v <= 22 then
-            local strCat = matchCat(v)
+            local low = string.lower(v)
+            local strCat = nil
+            for _, c in ipairs({ "Jaw", "Neck", "Head", "Tail", "Leg", "Body" }) do
+                for _, p in ipairs(PartPatterns[c]) do
+                    if string.find(low, p, 1, true) then
+                        strCat = c
+                        break
+                    end
+                end
+                if strCat then
+                    break
+                end
+            end
             if strCat and strCat ~= aimCat then
                 local em = getClosestEnemyBot()
                 local tp = em and findStrictTargetPartFast(em, aimCat)
@@ -1245,7 +1348,7 @@ Env.PriorUI_NamecallHandler = function(old, self, ...)
             if ta == "Instance" and arg:IsA("BasePart") then
                 local em = getEnemyModelFromPart(arg)
                 if em then
-                    local hitCat = PartToCategory[arg] or matchCat(arg.Name) or "Body"
+                    local hitCat = PartToCategory[arg] or matchCat(arg) or "Body"
                     if hitCat ~= cs.AimTargetPart then
                         local tp = findStrictTargetPartFast(em, cs.AimTargetPart)
                         if tp then
@@ -1255,14 +1358,6 @@ Env.PriorUI_NamecallHandler = function(old, self, ...)
                             cancelHit = true
                         end
                     end
-                end
-            elseif ta == "string" and #arg >= 3 and #arg <= 22 then
-                local strCat = matchCat(arg)
-                if strCat and strCat ~= cs.AimTargetPart then
-                    local em = getClosestEnemyBot()
-                    local tp = em and findStrictTargetPartFast(em, cs.AimTargetPart)
-                    args[i] = tp and tp.Name or cs.AimTargetPart
-                    modified = true
                 end
             elseif ta == "table" then
                 local subMod, subCancel = TryPatchSilentAimTable(arg, cs.AimTargetPart, 1)
@@ -1405,16 +1500,18 @@ function Combat.Init()
                             if (not isPlr) or State.AlsoTargetPlayers then
                                 if State.HitboxMaster or State.SilentAim then
                                     local prev = State.CachedBotModels[botModel]
-                                    -- Пересканируем модель, если у бота еще не были прогружены части (StreamingEnabled)
-                                    if not prev or (prev.TotalParts or 0) < 3 or #prev.Head == 0 then
-                                        nc[botModel] = Combat.ScanModel(botModel, false)
+                                    local curDescCount = #botModel:GetDescendants()
+                                    -- Если у бота подгрузились новые детали (StreamingEnabled), обязательно пересканируем!
+                                    if not prev or (prev.TotalParts or 0) == 0 or #prev.Head == 0 or math.abs(curDescCount - (prev.DescCount or 0)) > 4 then
+                                        local scanned = Combat.ScanModel(botModel, false)
+                                        scanned.DescCount = curDescCount
+                                        nc[botModel] = scanned
                                     else
                                         nc[botModel] = prev
                                     end
                                 end
                             end
                         else
-                            -- Если бот умер, сразу возвращаем его хитбоксы в норму и удаляем из списка!
                             Combat.RestoreSingleModelParts(botModel)
                             State.TrackedBots[botModel] = nil
                         end
@@ -1433,7 +1530,7 @@ function Combat.Init()
                     end
                 end
             end)
-            task.wait(1.0)
+            task.wait(0.9)
         end
     end)
 
@@ -1455,7 +1552,7 @@ function Combat.Init()
             Combat.RestoreLocalParts()
         end
 
-        -- 1. Хитбоксы Ботов-Зомби (1.5x..5.0x) + Изоляция Silent Aim
+        -- 1. Хитбоксы Ботов-Зомби (с защитой от перезаписи одной и той же детали разными категориями!)
         if State.HitboxMaster or State.SilentAim then
             local enemyMult = HitboxMultipliers[State.HitboxSizeLevel] or 2.5
             local aimCat = State.AimTargetPart
@@ -1464,82 +1561,96 @@ function Combat.Init()
                 if model and model.Parent and not isLocal(model) then
                     local _, _, isDead = GetBotHealth(model)
                     if not isDead then
+                        local expandMap = {}
+                        local aimMap = {}
+                        local allModelParts = {}
+
                         for cat, parts in pairs(groups) do
                             if type(parts) == "table" then
-                                local expandThisCat = State.HitboxMaster and (State.EnemyHitboxParts[cat] == true)
-                                local isAimTargetCat = State.SilentAim and (cat == aimCat)
-                                local disableNonTargetTouch = State.SilentAim and State.StrictCancelNonTarget and (not isAimTargetCat) and (not expandThisCat)
-
-                                if expandThisCat or isAimTargetCat or disableNonTargetTouch then
-                                    for _, part in ipairs(parts) do
-                                        if part and part.Parent and not isCritRoot(model, part, false) then
-                                            local o = State.OriginalParts[part]
-                                            if not o then
-                                                local mesh = part:FindFirstChildOfClass("SpecialMesh")
-                                                o = {
-                                                    Size = part.Size,
-                                                    Transparency = part.Transparency,
-                                                    CanCollide = part.CanCollide,
-                                                    CanQuery = part.CanQuery,
-                                                    CanTouch = part.CanTouch,
-                                                    Massless = part.Massless,
-                                                    CustomPhysicalProperties = part.CustomPhysicalProperties,
-                                                    RootPriority = part.RootPriority,
-                                                    Mesh = mesh,
-                                                    MeshScale = mesh and mesh.Scale or nil,
-                                                }
-                                                State.OriginalParts[part] = o
-                                            end
-
-                                            if expandThisCat then
-                                                local targetVec = o.Size * enemyMult
-                                                if (part.Size - targetVec).Magnitude > 0.05 then
-                                                    part.Massless = true
-                                                    part.CanCollide = false
-                                                    part.CustomPhysicalProperties = ZP
-                                                    part.RootPriority = -127
-                                                    part.Size = targetVec
-                                                    if o.Mesh and o.MeshScale then
-                                                        o.Mesh.Scale = o.MeshScale * enemyMult
-                                                    end
-                                                end
-                                                if math.abs(part.Transparency - State.HitboxTransparency) > 0.02 then
-                                                    part.Transparency = State.HitboxTransparency
-                                                end
-                                                if not part.CanTouch then
-                                                    part.CanTouch = true
-                                                end
-                                                if not part.CanQuery then
-                                                    part.CanQuery = true
-                                                end
-                                            elseif disableNonTargetTouch then
-                                                if (part.Size - o.Size).Magnitude > 0.05 then
-                                                    part.Size = o.Size
-                                                end
-                                                if part.CanTouch then
-                                                    part.CanTouch = false
-                                                end
-                                                if part.CanQuery then
-                                                    part.CanQuery = false
-                                                end
-                                            elseif isAimTargetCat then
-                                                local aimVec = o.Size * 1.8
-                                                if (part.Size - aimVec).Magnitude > 0.05 then
-                                                    part.Massless = true
-                                                    part.CanCollide = false
-                                                    part.CustomPhysicalProperties = ZP
-                                                    part.RootPriority = -127
-                                                    part.Size = aimVec
-                                                end
-                                                if not part.CanTouch then
-                                                    part.CanTouch = true
-                                                end
-                                                if not part.CanQuery then
-                                                    part.CanQuery = true
-                                                end
-                                            end
+                                local shouldExpand = State.HitboxMaster and (State.EnemyHitboxParts[cat] == true)
+                                local isAimCat = State.SilentAim and (cat == aimCat)
+                                for _, part in ipairs(parts) do
+                                    if part and part.Parent and not isCritRoot(model, part, false) then
+                                        allModelParts[part] = true
+                                        if shouldExpand then
+                                            expandMap[part] = true
+                                        end
+                                        if isAimCat then
+                                            aimMap[part] = true
                                         end
                                     end
+                                end
+                            end
+                        end
+
+                        for part in pairs(allModelParts) do
+                            local o = State.OriginalParts[part]
+                            if not o then
+                                local mesh = part:FindFirstChildOfClass("SpecialMesh")
+                                o = {
+                                    Size = part.Size,
+                                    Transparency = part.Transparency,
+                                    CanCollide = part.CanCollide,
+                                    CanQuery = part.CanQuery,
+                                    CanTouch = part.CanTouch,
+                                    Massless = part.Massless,
+                                    CustomPhysicalProperties = part.CustomPhysicalProperties,
+                                    RootPriority = part.RootPriority,
+                                    Mesh = mesh,
+                                    MeshScale = mesh and mesh.Scale or nil,
+                                }
+                                State.OriginalParts[part] = o
+                            end
+
+                            local doExpand = expandMap[part] == true
+                            local doAim = aimMap[part] == true
+                            local doDisableTouch = State.SilentAim and State.StrictCancelNonTarget and (not doAim) and (not doExpand)
+
+                            if doExpand then
+                                local targetVec = o.Size * enemyMult
+                                if (part.Size - targetVec).Magnitude > 0.05 then
+                                    part.Massless = true
+                                    part.CanCollide = false
+                                    part.CustomPhysicalProperties = ZP
+                                    part.RootPriority = -127
+                                    part.Size = targetVec
+                                    if o.Mesh and o.MeshScale then
+                                        o.Mesh.Scale = o.MeshScale * enemyMult
+                                    end
+                                end
+                                if math.abs(part.Transparency - State.HitboxTransparency) > 0.02 then
+                                    part.Transparency = State.HitboxTransparency
+                                end
+                                if not part.CanTouch then
+                                    part.CanTouch = true
+                                end
+                                if not part.CanQuery then
+                                    part.CanQuery = true
+                                end
+                            elseif doDisableTouch then
+                                if (part.Size - o.Size).Magnitude > 0.05 then
+                                    part.Size = o.Size
+                                end
+                                if part.CanTouch then
+                                    part.CanTouch = false
+                                end
+                                if part.CanQuery then
+                                    part.CanQuery = false
+                                end
+                            elseif doAim then
+                                local aimVec = o.Size * 1.8
+                                if (part.Size - aimVec).Magnitude > 0.05 then
+                                    part.Massless = true
+                                    part.CanCollide = false
+                                    part.CustomPhysicalProperties = ZP
+                                    part.RootPriority = -127
+                                    part.Size = aimVec
+                                end
+                                if not part.CanTouch then
+                                    part.CanTouch = true
+                                end
+                                if not part.CanQuery then
+                                    part.CanQuery = true
                                 end
                             end
                         end
@@ -1632,7 +1743,7 @@ function Combat.Init()
 end
 
 -- ============================================================================
--- 7. HALLOWEEN ESP MODULE (CLEAN PUMPKINS + INSTANT DEAD BOT REMOVAL)
+-- 7. HALLOWEEN ESP MODULE (4 PUMPKIN TYPES + ZOMBIE BOTS ESP)
 -- ============================================================================
 local ESPModule = {}
 local botGuis, worldGuis, trackedWorld, headCache, speciesCache = {}, {}, {}, {}, {}
@@ -1642,6 +1753,13 @@ ESPFolder.Name = "PE_Halloween_ESP"
 pcall(function()
     ESPFolder.Parent = Utils.GuiParent()
 end)
+
+local PumpkinTypeMeta = {
+    Normal = { Title = "🎃 ОБЫЧНАЯ ТЫКВА", Color = Color3.fromRGB(255, 135, 20) },
+    Yellow = { Title = "🟡 ЖЁЛТАЯ ТЫКВА", Color = Color3.fromRGB(255, 230, 35) },
+    Green  = { Title = "🟢 ЗЕЛЁНАЯ ТЫКВА", Color = Color3.fromRGB(65, 245, 90) },
+    White  = { Title = "⚪ БЕЛАЯ ТЫКВА", Color = Color3.fromRGB(245, 245, 255) },
+}
 
 local function getESPHead(c)
     if not c or not c:IsA("Model") then
@@ -1778,6 +1896,100 @@ local IgnoredSpawnKeywords = { "spawn", "point", "zone", "holder", "spawner", "c
 local BoneKeywords = { "fossil", "bone", "skeleton", "amber", "relic", "digsite", "dig_site", "excavat", "skull", "remains" }
 local CorpseKeywords = { "carcass", "corpse", "deadbody", "dead_body", "meat", "gore", "chunk", "edible", "food", "prey", "ribcage", "flesh", "steak" }
 
+-- Классификатор 4 видов тыкв (Зелёная, Белая, Жёлтая, Обычная) по названию, атрибутам и реальному цвету Color3 (HSV)
+local function ClassifyColorToPumpkinType(c)
+    if not c then
+        return nil
+    end
+    local h, s, v = c:ToHSV()
+    -- Белая тыква: очень низкая насыщенность и высокая яркость (или очень светлый RGB)
+    if (s <= 0.25 and v >= 0.72) or (c.R >= 0.78 and c.G >= 0.78 and c.B >= 0.78) then
+        return "White"
+    end
+    -- Зелёная тыква: оттенок в зелёном секторе (0.20 .. 0.46) или доминирующий зеленый канал
+    if (h >= 0.20 and h <= 0.46 and s > 0.25) or (c.G > c.R * 1.18 and c.G > c.B * 1.18) then
+        return "Green"
+    end
+    -- Жёлтая тыква: оттенок между оранжевым и салатовым (0.115 .. 0.199) или высокий R и G при низком B
+    if (h >= 0.115 and h < 0.20 and s > 0.3) or (c.R > 0.75 and c.G > 0.68 and c.B < 0.35) then
+        return "Yellow"
+    end
+    -- Обычная (оранжевая) тыква
+    if h >= 0.02 and h < 0.115 and s > 0.3 then
+        return "Normal"
+    end
+    return nil
+end
+
+local function DetectPumpkinVariant(rootTarget, part, fullText)
+    local tx = string.lower(fullText or "")
+
+    -- 1. Проверка по ключевым словам в имени/родителях
+    if string.find(tx, "green", 1, true) or string.find(tx, "uncommon", 1, true) or string.find(tx, "lime", 1, true) or string.find(tx, "emerald", 1, true) then
+        return "Green"
+    elseif string.find(tx, "white", 1, true) or string.find(tx, "ghost", 1, true) or string.find(tx, "pale", 1, true) or string.find(tx, "albino", 1, true) or string.find(tx, "silver", 1, true) then
+        return "White"
+    elseif string.find(tx, "yellow", 1, true) or string.find(tx, "gold", 1, true) or string.find(tx, "golden", 1, true) or string.find(tx, "amber", 1, true) then
+        return "Yellow"
+    elseif string.find(tx, "orange", 1, true) or string.find(tx, "normal", 1, true) or string.find(tx, "common", 1, true) or string.find(tx, "classic", 1, true) then
+        return "Normal"
+    end
+
+    -- 2. Проверка атрибутов модели/детали (Type, Rarity, Variant, Color)
+    for _, inst in ipairs({ rootTarget, part }) do
+        if inst then
+            local ok, attrs = pcall(function()
+                return inst:GetAttributes()
+            end)
+            if ok and type(attrs) == "table" then
+                for _, v in pairs(attrs) do
+                    if type(v) == "string" then
+                        local lv = string.lower(v)
+                        if string.find(lv, "green", 1, true) then return "Green" end
+                        if string.find(lv, "white", 1, true) then return "White" end
+                        if string.find(lv, "yellow", 1, true) or string.find(lv, "gold", 1, true) then return "Yellow" end
+                    elseif typeof(v) == "Color3" then
+                        local byAttrCol = ClassifyColorToPumpkinType(v)
+                        if byAttrCol then return byAttrCol end
+                    end
+                end
+            end
+        end
+    end
+
+    -- 3. Проверка цвета свечения (PointLight / SurfaceLight / Highlight) или самой 3D-детали тыквы
+    local candidates = {}
+    if rootTarget then
+        local hl = rootTarget:FindFirstChildOfClass("Highlight")
+        if hl then
+            table.insert(candidates, hl.FillColor)
+        end
+        for _, d in ipairs(rootTarget:GetDescendants()) do
+            if d:IsA("Light") then
+                table.insert(candidates, d.Color)
+            elseif d:IsA("BasePart") and d.Transparency < 0.9 then
+                local dn = string.lower(d.Name)
+                -- Игнорируем маленький коричневый/зеленый хвостик-стебель тыквы (stem/stalk), берем корпус тыквы
+                if not string.find(dn, "stem", 1, true) and not string.find(dn, "stalk", 1, true) then
+                    table.insert(candidates, d.Color)
+                end
+            end
+        end
+    end
+    if part and part:IsA("BasePart") then
+        table.insert(candidates, part.Color)
+    end
+
+    for _, col in ipairs(candidates) do
+        local detected = ClassifyColorToPumpkinType(col)
+        if detected and detected ~= "Normal" then
+            return detected
+        end
+    end
+
+    return "Normal"
+end
+
 local function MatchWorldCategoryFromText(tx, part)
     for _, k in ipairs(IgnoredSpawnKeywords) do
         if string.find(tx, k, 1, true) then
@@ -1838,7 +2050,8 @@ local function TryRegisterWorldObject(d)
             or target:FindFirstChildWhichIsA("BasePart", true)
         local cat = MatchWorldCategoryFromText(tx, part)
         if cat and part then
-            trackedWorld[target] = { Category = cat, Part = part }
+            local pType = (cat == "Pumpkin") and DetectPumpkinVariant(target, part, tx) or nil
+            trackedWorld[target] = { Category = cat, Part = part, PumpkinType = pType }
         end
         return
     end
@@ -1864,7 +2077,8 @@ local function TryRegisterWorldObject(d)
         if cat then
             local rootTarget = (d:IsA("BasePart") and ancestorModel and ancestorModel ~= Workspace and not State.TrackedBots[ancestorModel]) and ancestorModel or d
             if not trackedWorld[rootTarget] and part then
-                trackedWorld[rootTarget] = { Category = cat, Part = part }
+                local pType = (cat == "Pumpkin") and DetectPumpkinVariant(rootTarget, part, fullCheck) or nil
+                trackedWorld[rootTarget] = { Category = cat, Part = part, PumpkinType = pType }
             end
         end
     end
@@ -1954,7 +2168,7 @@ function ESPModule.Init()
             pcall(function()
                 local myPos = GetMyPosition()
 
-                -- 1. ESP Ботов-Зомби (удаляет мертвых ботов по любому признаку HP <= 0)
+                -- 1. ESP Ботов-Зомби
                 if not State.BotESPEnabled then
                     for _, data in pairs(botGuis) do
                         if data.gui and data.gui.Enabled then
@@ -2093,7 +2307,7 @@ function ESPModule.Init()
                     end
                 end
 
-                -- 2. Чистое ESP Тыкв (Pumpkins XP)
+                -- 2. ESP 4 Видов Тыкв (Обычная, Жёлтая, Зелёная, Белая) + Кости/Трупы
                 if State.ESPPumpkins or State.ESPBones or State.ESPCorpses then
                     if not worldScanDone and not worldScanning then
                         ESPModule.ScanWorldItems()
@@ -2110,9 +2324,16 @@ function ESPModule.Init()
                             trackedWorld[obj] = nil
                         else
                             local cat = info.Category
-                            local show = (cat == "Pumpkin" and State.ESPPumpkins)
-                                or (cat == "Bone" and State.ESPBones)
-                                or (cat == "Corpse" and State.ESPCorpses)
+                            local pType = info.PumpkinType or "Normal"
+                            local show = false
+                            if cat == "Pumpkin" then
+                                show = State.ESPPumpkins and (State.PumpkinTypes[pType] == true)
+                            elseif cat == "Bone" then
+                                show = State.ESPBones
+                            elseif cat == "Corpse" then
+                                show = State.ESPCorpses
+                            end
+
                             local maxD = (cat == "Pumpkin") and State.PumpkinESPMaxDistance or State.WorldESPMaxDistance
                             local dist = (myPos - part.Position).Magnitude
 
@@ -2120,7 +2341,7 @@ function ESPModule.Init()
                                 if not worldGuis[obj] or not worldGuis[obj].gui or not worldGuis[obj].gui.Parent then
                                     local bGui = Instance.new("BillboardGui")
                                     bGui.Name = "PE_HalloweenWorldESP"
-                                    bGui.Size = UDim2.fromOffset(165, 28)
+                                    bGui.Size = UDim2.fromOffset(180, 28)
                                     bGui.StudsOffset = Vector3.new(0, 3.0, 0)
                                     bGui.AlwaysOnTop = true
                                     bGui.Parent = ESPFolder
@@ -2131,9 +2352,6 @@ function ESPModule.Init()
                                     lbl.TextStrokeTransparency = 0.05
                                     lbl.Font = Enum.Font.GothamBold
                                     lbl.TextSize = (cat == "Pumpkin") and 13 or 12
-                                    lbl.TextColor3 = (cat == "Pumpkin" and Color3.fromRGB(255, 145, 20))
-                                        or (cat == "Bone" and Color3.fromRGB(255, 235, 150))
-                                        or Color3.fromRGB(255, 110, 90)
                                     lbl.Parent = bGui
 
                                     worldGuis[obj] = { gui = bGui, label = lbl }
@@ -2141,10 +2359,14 @@ function ESPModule.Init()
                                 local wGui = worldGuis[obj]
                                 wGui.gui.Adornee = part
                                 if cat == "Pumpkin" then
-                                    wGui.label.Text = string.format("🎃 ТЫКВА (XP) [%dm]", math.floor(dist))
+                                    local meta = PumpkinTypeMeta[pType] or PumpkinTypeMeta.Normal
+                                    wGui.label.TextColor3 = meta.Color
+                                    wGui.label.Text = string.format("%s [%dm]", meta.Title, math.floor(dist))
                                 elseif cat == "Bone" then
+                                    wGui.label.TextColor3 = Color3.fromRGB(255, 235, 150)
                                     wGui.label.Text = string.format("[%dm] КОСТЬ", math.floor(dist))
                                 else
+                                    wGui.label.TextColor3 = Color3.fromRGB(255, 110, 90)
                                     wGui.label.Text = string.format("[%dm] ЕДА/ТРУП", math.floor(dist))
                                 end
                                 wGui.gui.Enabled = true
@@ -2200,7 +2422,7 @@ local TitleLabel = Instance.new("TextLabel")
 TitleLabel.Size = UDim2.new(1, -120, 1, 0)
 TitleLabel.Position = UDim2.fromOffset(15, 0)
 TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text = "APEX-HALLOWEEN // ZOMBIE BOTS & PUMPKINS"
+TitleLabel.Text = "APEX-HALLOWEEN v1.3 // 4 PUMPKINS & BOTS"
 TitleLabel.TextColor3 = Color3.fromRGB(255, 160, 55)
 TitleLabel.Font = Enum.Font.GothamBold
 TitleLabel.TextSize = 13
@@ -2379,251 +2601,4 @@ local function CreateCycleButton(parent, labelPrefix, options, defaultIndex, ord
 
     Utils.Track(btn.Activated:Connect(function()
         idx = (idx % #options) + 1
-        btn.Text = labelPrefix .. ": " .. tostring(options[idx])
-        if callback then
-            pcall(callback, options[idx], idx)
-        end
-    end))
-end
-
-local CombatPage = CreateTab("Combat")
-local RenderPage = CreateTab("Halloween ESP")
-local ToolsPage = CreateTab("Tools")
-
--- Combat Tab
-CreateToggle(CombatPage, "Reach (Точная форма хитбокса)", State.ReachEnabled, 1, function(v)
-    State.ReachEnabled = v
-    if not v then
-        State.NeedsLocalRestore = true
-    end
-end)
-CreateCycleButton(CombatPage, "Множитель Reach (1.5x - 5x)", ReachLabels, State.ReachScaleLevel, 2, function(_, idx)
-    State.ReachScaleLevel = idx
-end)
-CreateCycleButton(CombatPage, "Прозрачность Reach", TransLabels, State.ReachTransLevel, 3, function(_, idx)
-    State.ReachTransLevel = idx
-    State.ReachTransparency = TransValues[idx] or 0.75
-end)
-CreateToggle(CombatPage, "[Reach] Челюсть / Укус (Jaw)", State.ReachParts.Jaw, 4, function(v)
-    State.ReachParts.Jaw = v
-    State.NeedsLocalRestore = true
-end)
-CreateToggle(CombatPage, "[Reach] Голова (Head)", State.ReachParts.Head, 5, function(v)
-    State.ReachParts.Head = v
-    State.NeedsLocalRestore = true
-end)
-CreateToggle(CombatPage, "[Reach] Шея (Neck)", State.ReachParts.Neck, 6, function(v)
-    State.ReachParts.Neck = v
-    State.NeedsLocalRestore = true
-end)
-CreateToggle(CombatPage, "[Reach] Весь Хвост (Full Tail)", State.ReachParts.Tail, 7, function(v)
-    State.ReachParts.Tail = v
-    State.NeedsLocalRestore = true
-end)
-CreateToggle(CombatPage, "[Reach] Ноги и Лапы (Legs)", State.ReachParts.Leg, 8, function(v)
-    State.ReachParts.Leg = v
-    State.NeedsLocalRestore = true
-end)
-CreateToggle(CombatPage, "[Reach] Тело (Body)", State.ReachParts.Body, 9, function(v)
-    State.ReachParts.Body = v
-    State.NeedsLocalRestore = true
-end)
-
-CreateToggle(CombatPage, "Silent Aim по Ботам-Зомби (Только в цель)", State.SilentAim, 10, function(v)
-    State.SilentAim = v
-    State.NeedsEnemyRestore = true
-end)
-CreateCycleButton(CombatPage, "Цель Silent Aim (Боты)", { "Head", "Neck", "Jaw", "Body", "Tail", "Leg" }, 1, 11, function(opt)
-    State.AimTargetPart = opt
-    State.NeedsEnemyRestore = true
-end)
-CreateToggle(CombatPage, "Не регать урон мимо цели Silent Aim", State.StrictCancelNonTarget, 12, function(v)
-    State.StrictCancelNonTarget = v
-    State.NeedsEnemyRestore = true
-end)
-
-CreateToggle(CombatPage, "Bot Hitbox Expander (Хитбоксы Зомби)", State.HitboxMaster, 13, function(v)
-    State.HitboxMaster = v
-    State.NeedsEnemyRestore = true
-end)
-CreateCycleButton(CombatPage, "Множитель Хитбокса Ботов", HitboxLabels, State.HitboxSizeLevel, 14, function(_, idx)
-    State.HitboxSizeLevel = idx
-end)
-CreateCycleButton(CombatPage, "Прозрачность Хитбокса Ботов", TransLabels, State.HitboxTransLevel, 15, function(_, idx)
-    State.HitboxTransLevel = idx
-    State.HitboxTransparency = TransValues[idx] or 0.75
-end)
-CreateToggle(CombatPage, "[Hitbox Бота] Голова (Head)", State.EnemyHitboxParts.Head, 16, function(v)
-    State.EnemyHitboxParts.Head = v
-    State.NeedsEnemyRestore = true
-end)
-CreateToggle(CombatPage, "[Hitbox Бота] Шея (Neck)", State.EnemyHitboxParts.Neck, 17, function(v)
-    State.EnemyHitboxParts.Neck = v
-    State.NeedsEnemyRestore = true
-end)
-CreateToggle(CombatPage, "[Hitbox Бота] Челюсть (Jaw)", State.EnemyHitboxParts.Jaw, 18, function(v)
-    State.EnemyHitboxParts.Jaw = v
-    State.NeedsEnemyRestore = true
-end)
-CreateToggle(CombatPage, "[Hitbox Бота] Тело / Торс (Body)", State.EnemyHitboxParts.Body, 19, function(v)
-    State.EnemyHitboxParts.Body = v
-    State.NeedsEnemyRestore = true
-end)
-CreateToggle(CombatPage, "[Hitbox Бота] Хвост (Tail)", State.EnemyHitboxParts.Tail, 20, function(v)
-    State.EnemyHitboxParts.Tail = v
-    State.NeedsEnemyRestore = true
-end)
-CreateToggle(CombatPage, "[Hitbox Бота] Ноги / Лапы (Legs)", State.EnemyHitboxParts.Leg, 21, function(v)
-    State.EnemyHitboxParts.Leg = v
-    State.NeedsEnemyRestore = true
-end)
-CreateToggle(CombatPage, "Захватывать также обычных игроков", State.AlsoTargetPlayers, 22, function(v)
-    State.AlsoTargetPlayers = v
-    State.NeedsEnemyRestore = true
-end)
-CreateToggle(CombatPage, "No Attack CD", State.NoAttackCD, 23, function(v)
-    State.NoAttackCD = v
-end)
-
--- Halloween ESP & Render Tab
-CreateToggle(RenderPage, "🎃 ESP Тыкв (Pumpkins XP)", State.ESPPumpkins, 1, function(v)
-    State.ESPPumpkins = v
-    if v then
-        ESPModule.ScanWorldItems()
-    end
-end)
-CreateCycleButton(RenderPage, "Дистанция ESP Тыкв", { 1500, 2500, 3500, 5000 }, 3, 2, function(val)
-    State.PumpkinESPMaxDistance = val
-end)
-CreateToggle(RenderPage, "🧟 ESP Ботов-Зомби (Вид + Дистанция + HP)", State.BotESPEnabled, 3, function(v)
-    State.BotESPEnabled = v
-end)
-CreateToggle(RenderPage, "Показывать Вид Динозавра-Бота", State.ESP_BotSpecies, 4, function(v)
-    State.ESP_BotSpecies = v
-end)
-CreateToggle(RenderPage, "Показывать Полоску HP Бота", State.ESP_BotHealth, 5, function(v)
-    State.ESP_BotHealth = v
-end)
-CreateCycleButton(RenderPage, "Дистанция ESP Ботов", { 1000, 2500, 4000, 6000 }, 2, 6, function(val)
-    State.BotESPMaxDistance = val
-end)
-CreateToggle(RenderPage, "Unlock Camera (Отдаление без лимита)", State.UnlockCamera, 7, function(v)
-    State.UnlockCamera = v
-end)
-CreateToggle(RenderPage, "Night Vision (Светло как днем)", State.NightVision, 8, function(v)
-    State.NightVision = v
-end)
-CreateToggle(RenderPage, "No Blur (Убрать размытие)", State.NoBlur, 9, function(v)
-    State.NoBlur = v
-end)
-CreateToggle(RenderPage, "No Sleep Screen (Убрать темный экран)", State.NoSleepScreen, 10, function(v)
-    State.NoSleepScreen = v
-    if v then
-        Visuals.ScanSleepGui()
-    end
-end)
-CreateToggle(RenderPage, "ESP Костей", State.ESPBones, 11, function(v)
-    State.ESPBones = v
-    if v then
-        ESPModule.ScanWorldItems()
-    end
-end)
-CreateToggle(RenderPage, "ESP Еды / Трупов", State.ESPCorpses, 12, function(v)
-    State.ESPCorpses = v
-    if v then
-        ESPModule.ScanWorldItems()
-    end
-end)
-
--- Tools Tab
-CreateToggle(ToolsPage, "Auto Clean (Вшитый пакет мытья)", State.AutoClean, 1, function(v)
-    State.AutoClean = v
-    if v then
-        Utils.Notify("Auto Clean", "Пакетное мытье активировано!")
-    end
-end)
-CreateToggle(ToolsPage, "Save Dino (Уход под землю от ботов)", false, 2, function(v)
-    SaveDino.SetEnabled(v)
-end)
-CreateCycleButton(ToolsPage, "Направление Save Dino", { "Down", "Up" }, 1, 3, function(_, idx)
-    State.SaveDinoMode = (idx == 1) and "Down" or "Up"
-    SaveDino.RecalculateTarget()
-    if State.SaveDinoPhase == "holding" then
-        State.SaveDinoPhase = "moving_to_safe"
-    end
-end)
-CreateCycleButton(ToolsPage, "Глубина Save Dino", { 50, 70, 95, 120 }, 2, 4, function(val)
-    State.SaveDinoOffset = val
-    SaveDino.RecalculateTarget()
-    if State.SaveDinoPhase == "holding" then
-        State.SaveDinoPhase = "moving_to_safe"
-    end
-end)
-
-local function MinimizeUI()
-    if State.Minimized then
-        return
-    end
-    State.Minimized = true
-    MainFrame.Visible = false
-    MiniIcon.Size = IconSize
-    MiniIcon.Visible = true
-end
-
-local function RestoreUI()
-    if not State.Minimized then
-        return
-    end
-    State.Minimized = false
-    MiniIcon.Visible = false
-    MainFrame.Visible = true
-end
-
-local function DeactivateScript()
-    if not State.Active then
-        return
-    end
-    State.Active = false
-    State.SilentAim = false
-    State.HitboxMaster = false
-    State.ReachEnabled = false
-    State.BotESPEnabled = false
-    State.ESPPumpkins = false
-    State.ESPBones = false
-    State.ESPCorpses = false
-    State.NoAttackCD = false
-    State.AutoClean = false
-    State.UnlockCamera = false
-
-    Visuals.Restore()
-    SaveDino.ForceReset()
-    Combat.RestoreAll()
-    ESPModule.Cleanup()
-
-    for _, conn in ipairs(State.Connections) do
-        pcall(function()
-            conn:Disconnect()
-        end)
-    end
-    table.clear(State.Connections)
-
-    pcall(function()
-        ScreenGui:Destroy()
-    end)
-    Env.PriorUI_Cleanup = nil
-    Utils.Notify("Apex-Halloween", "Скрипт выгружен.")
-end
-
-Env.PriorUI_Cleanup = DeactivateScript
-Utils.Drag(TopBar, MainFrame, nil)
-Utils.Drag(MiniIcon, MiniIcon, RestoreUI)
-Utils.Track(MinimizeBtn.Activated:Connect(MinimizeUI))
-Utils.Track(DeactivateBtn.Activated:Connect(DeactivateScript))
-
-Visuals.Init()
-Survival.Init()
-SaveDino.Init()
-Combat.Init()
-ESPModule.Init()
-
-Utils.Notify("Apex-Halloween", "v1.2 запущен! Ошибки ESP и Hitbox исправлены.")
+        btn.Text = labelPrefix ..
