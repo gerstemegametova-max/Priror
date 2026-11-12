@@ -1,5 +1,5 @@
--- Prior Extinction // APEX-HALLOWEEN v1.3 (Fast Launch + Fixed Dead Bot ESP + Clean Pumpkins + 1.5x-5.0x Hitbox/Reach)
-print("[Apex-Halloween] Запуск v1.3...")
+-- Prior Extinction // APEX-HALLOWEEN v1.4 (4 Pumpkin Types ESP: White, Green, Yellow, Normal + Zombie Bots)
+print("[Apex-Halloween] Запуск v1.4 с разделением тыкв по цветам...")
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -52,8 +52,17 @@ local State = {
     BotESPMaxDistance = 2500,
     ESP_BotSpecies = true,
     ESP_BotHealth = true,
+
+    -- Настройки ESP Тыкв (4 вида)
     ESPPumpkins = true,
+    PumpkinTypes = {
+        Normal = true, -- Обычная (Оранжевая)
+        Green = true,  -- Зеленая
+        Yellow = true, -- Желтая / Золотая
+        White = true,  -- Белая
+    },
     PumpkinESPMaxDistance = 3500,
+
     ESPBones = false,
     ESPCorpses = false,
     WorldESPMaxDistance = 2500,
@@ -1030,12 +1039,75 @@ function Combat.Init()
     end)
 end
 
--- 6. HALLOWEEN ESP MODULE (CLEAN PUMPKINS + LIVE ZOMBIE BOTS)
+-- 6. HALLOWEEN ESP MODULE (4 PUMPKIN TYPES: WHITE, GREEN, YELLOW, NORMAL + LIVE ZOMBIE BOTS)
 local ESPModule = {}
 local botGuis, worldGuis, trackedWorld, headCache, speciesCache = {}, {}, {}, {}, {}
 local worldScanDone, worldScanning = false, false
 local ESPFolder = Instance.new("Folder"); ESPFolder.Name = "PE_Halloween_ESP"
 pcall(function() ESPFolder.Parent = Utils.GuiParent() end)
+
+local PumpkinVisuals = {
+    White  = { Title = "⚪ БЕЛАЯ ТЫКВА",   Color = Color3.fromRGB(245, 248, 255) },
+    Yellow = { Title = "🟡 ЖЕЛТАЯ ТЫКВА",  Color = Color3.fromRGB(255, 225, 45)  },
+    Green  = { Title = "🟢 ЗЕЛЕНАЯ ТЫКВА", Color = Color3.fromRGB(75, 240, 95)   },
+    Normal = { Title = "🎃 ОБЫЧНАЯ ТЫКВА", Color = Color3.fromRGB(255, 140, 25)  },
+}
+
+-- Определяет точный тип тыквы (White / Green / Yellow / Normal) по названию, атрибутам или RGB-цвету 3D-детали
+local function DetectPumpkinSubType(targetObj, part, fullText)
+    local checkStr = fullText or ""
+    if targetObj then
+        local ok, attrs = pcall(function() return targetObj:GetAttributes() end)
+        if ok and type(attrs) == "table" then
+            for k, v in pairs(attrs) do
+                checkStr = checkStr .. " " .. string.lower(tostring(k) .. " " .. tostring(v))
+            end
+        end
+    end
+
+    -- 1. Проверка по ключевым словам в названии / атрибутах
+    if string.find(checkStr, "white", 1, true) or string.find(checkStr, "albino", 1, true) or string.find(checkStr, "ghost", 1, true) or string.find(checkStr, "pale", 1, true) or string.find(checkStr, "silver", 1, true) then
+        return "White"
+    elseif string.find(checkStr, "green", 1, true) or string.find(checkStr, "lime", 1, true) or string.find(checkStr, "emerald", 1, true) or string.find(checkStr, "uncommon", 1, true) then
+        return "Green"
+    elseif string.find(checkStr, "yellow", 1, true) or string.find(checkStr, "gold", 1, true) or string.find(checkStr, "golden", 1, true) or string.find(checkStr, "amber", 1, true) then
+        return "Yellow"
+    end
+
+    -- 2. Проверка по реальному цвету самой тыквы (Part.Color / MeshPart.Color)
+    local colorPart = part
+    if targetObj and targetObj:IsA("Model") then
+        for _, d in ipairs(targetObj:GetDescendants()) do
+            if d:IsA("BasePart") and d.Transparency < 0.8 then
+                local dn = string.lower(d.Name)
+                -- Ищем основное тело тыквы, пропуская зеленый хвостик/стебель (stem/stalk/vine)
+                if not string.find(dn, "stem", 1, true) and not string.find(dn, "stalk", 1, true) and not string.find(dn, "vine", 1, true) and not string.find(dn, "leaf", 1, true) then
+                    colorPart = d
+                    break
+                end
+            end
+        end
+    end
+
+    if colorPart and colorPart:IsA("BasePart") then
+        local c = colorPart.Color
+        local h, s, v = Color3.toHSV(c)
+        -- Белая тыква: низкая насыщенность и высокая яркость
+        if s < 0.22 and v > 0.70 then
+            return "White"
+        end
+        -- Зеленая тыква: оттенок зеленого (Hue ~ 0.21 .. 0.46)
+        if h >= 0.21 and h <= 0.46 and s >= 0.22 then
+            return "Green"
+        end
+        -- Желтая/золотая тыква: оттенок желтого (Hue ~ 0.115 .. 0.21) или очень высокое G при высоком R
+        if (h >= 0.115 and h < 0.21 and s >= 0.25) or (c.R > 0.82 and c.G > 0.72 and c.B < 0.35) then
+            return "Yellow"
+        end
+    end
+
+    return "Normal"
+end
 
 local function getESPHead(c)
     if not c or not c:IsA("Model") then return nil end
@@ -1154,7 +1226,10 @@ local function TryRegisterWorldObject(d)
         if d:IsA("ProximityPrompt") then tx = tx .. " " .. string.lower(d.ActionText .. " " .. d.ObjectText) end
         local part = target:IsA("BasePart") and target or target:FindFirstAncestorWhichIsA("BasePart") or target:FindFirstChildWhichIsA("BasePart", true)
         local cat = MatchWorldCategoryFromText(tx, part)
-        if cat and part then trackedWorld[target] = { Category = cat, Part = part } end
+        if cat and part then
+            local pType = (cat == "Pumpkin") and DetectPumpkinSubType(target, part, tx) or nil
+            trackedWorld[target] = { Category = cat, SubType = pType, Part = part, FullText = tx }
+        end
         return
     end
     if d:IsA("Model") or d:IsA("BasePart") or d:IsA("MeshPart") then
@@ -1167,7 +1242,10 @@ local function TryRegisterWorldObject(d)
         local cat = MatchWorldCategoryFromText(fullCheck, part)
         if cat and part then
             local rootTarget = (d:IsA("BasePart") and ancestorModel and ancestorModel ~= Workspace and not State.TrackedBots[ancestorModel]) and ancestorModel or d
-            if not trackedWorld[rootTarget] then trackedWorld[rootTarget] = { Category = cat, Part = part } end
+            if not trackedWorld[rootTarget] then
+                local pType = (cat == "Pumpkin") and DetectPumpkinSubType(rootTarget, part, fullCheck) or nil
+                trackedWorld[rootTarget] = { Category = cat, SubType = pType, Part = part, FullText = fullCheck }
+            end
         end
     end
 end
@@ -1299,6 +1377,7 @@ function ESPModule.Init()
                     end
                 end
 
+                -- ESP Тыкв (с разделением на Белую, Зеленую, Желтую и Обычную) + Кости/Трупы
                 if State.ESPPumpkins or State.ESPBones or State.ESPCorpses then
                     if not worldScanDone and not worldScanning then ESPModule.ScanWorldItems() end
                     for obj, info in pairs(trackedWorld) do
@@ -1308,23 +1387,44 @@ function ESPModule.Init()
                             worldGuis[obj] = nil; trackedWorld[obj] = nil
                         else
                             local cat = info.Category
-                            local show = (cat == "Pumpkin" and State.ESPPumpkins) or (cat == "Bone" and State.ESPBones) or (cat == "Corpse" and State.ESPCorpses)
+                            local subType = info.SubType
+                            if cat == "Pumpkin" then
+                                subType = DetectPumpkinSubType(obj, part, info.FullText)
+                                info.SubType = subType
+                            end
+
+                            local show = false
+                            if cat == "Pumpkin" and State.ESPPumpkins then
+                                show = (State.PumpkinTypes[subType or "Normal"] == true)
+                            elseif cat == "Bone" and State.ESPBones then
+                                show = true
+                            elseif cat == "Corpse" and State.ESPCorpses then
+                                show = true
+                            end
+
                             local maxD = (cat == "Pumpkin") and State.PumpkinESPMaxDistance or State.WorldESPMaxDistance
                             local dist = (myPos - part.Position).Magnitude
                             if show and dist <= maxD then
                                 if not worldGuis[obj] or not worldGuis[obj].gui or not worldGuis[obj].gui.Parent then
                                     local bGui = Instance.new("BillboardGui"); bGui.Name = "PE_HalloweenWorldESP"
-                                    bGui.Size = UDim2.fromOffset(165, 28); bGui.StudsOffset = Vector3.new(0, 3.0, 0); bGui.AlwaysOnTop = true; bGui.Parent = ESPFolder
+                                    bGui.Size = UDim2.fromOffset(185, 28); bGui.StudsOffset = Vector3.new(0, 3.0, 0); bGui.AlwaysOnTop = true; bGui.Parent = ESPFolder
                                     local lbl = Instance.new("TextLabel"); lbl.Size = UDim2.fromScale(1, 1); lbl.BackgroundTransparency = 1
                                     lbl.TextStrokeTransparency = 0.05; lbl.Font = Enum.Font.GothamBold; lbl.TextSize = (cat == "Pumpkin") and 13 or 12
-                                    lbl.TextColor3 = (cat == "Pumpkin" and Color3.fromRGB(255, 145, 20)) or (cat == "Bone" and Color3.fromRGB(255, 235, 150)) or Color3.fromRGB(255, 110, 90)
                                     lbl.Parent = bGui
                                     worldGuis[obj] = { gui = bGui, label = lbl }
                                 end
                                 local wGui = worldGuis[obj]; wGui.gui.Adornee = part
-                                if cat == "Pumpkin" then wGui.label.Text = string.format("🎃 ТЫКВА (XP) [%dm]", math.floor(dist))
-                                elseif cat == "Bone" then wGui.label.Text = string.format("[%dm] КОСТЬ", math.floor(dist))
-                                else wGui.label.Text = string.format("[%dm] ЕДА/ТРУП", math.floor(dist)) end
+                                if cat == "Pumpkin" then
+                                    local pVis = PumpkinVisuals[subType or "Normal"] or PumpkinVisuals.Normal
+                                    wGui.label.TextColor3 = pVis.Color
+                                    wGui.label.Text = string.format("%s [%dm]", pVis.Title, math.floor(dist))
+                                elseif cat == "Bone" then
+                                    wGui.label.TextColor3 = Color3.fromRGB(255, 235, 150)
+                                    wGui.label.Text = string.format("[%dm] КОСТЬ", math.floor(dist))
+                                else
+                                    wGui.label.TextColor3 = Color3.fromRGB(255, 110, 90)
+                                    wGui.label.Text = string.format("[%dm] ЕДА/ТРУП", math.floor(dist))
+                                end
                                 wGui.gui.Enabled = true
                             elseif worldGuis[obj] and worldGuis[obj].gui then
                                 worldGuis[obj].gui.Enabled = false
@@ -1351,7 +1451,7 @@ MainFrameRef = MainFrame
 
 local TopBar = Instance.new("Frame"); TopBar.Size = UDim2.new(1, 0, 0, 42); TopBar.BackgroundColor3 = Theme.Surface; TopBar.Parent = MainFrame; Utils.Style(TopBar, 12, nil)
 local TitleLabel = Instance.new("TextLabel"); TitleLabel.Size = UDim2.new(1, -120, 1, 0); TitleLabel.Position = UDim2.fromOffset(15, 0); TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text = "APEX-HALLOWEEN // ZOMBIE BOTS & PUMPKINS"; TitleLabel.TextColor3 = Color3.fromRGB(255, 160, 55); TitleLabel.Font = Enum.Font.GothamBold; TitleLabel.TextSize = 13; TitleLabel.TextXAlignment = Enum.TextXAlignment.Left; TitleLabel.Parent = TopBar
+TitleLabel.Text = "APEX-HALLOWEEN // 4 PUMPKIN TYPES & BOTS"; TitleLabel.TextColor3 = Color3.fromRGB(255, 160, 55); TitleLabel.Font = Enum.Font.GothamBold; TitleLabel.TextSize = 13; TitleLabel.TextXAlignment = Enum.TextXAlignment.Left; TitleLabel.Parent = TopBar
 
 local MinimizeBtn = Instance.new("TextButton"); MinimizeBtn.Size = UDim2.fromOffset(32, 28); MinimizeBtn.Position = UDim2.new(1, -40, 0.5, -14); MinimizeBtn.BackgroundColor3 = Theme.Element
 MinimizeBtn.Text = "—"; MinimizeBtn.TextColor3 = Theme.TextPrimary; MinimizeBtn.Font = Enum.Font.GothamBold; MinimizeBtn.TextSize = 14; MinimizeBtn.Parent = TopBar; Utils.Style(MinimizeBtn, 6, Theme.Stroke, 1)
@@ -1444,18 +1544,24 @@ CreateToggle(CombatPage, "[Hitbox Бота] Ноги / Лапы (Legs)", State.E
 CreateToggle(CombatPage, "Захватывать также обычных игроков", State.AlsoTargetPlayers, 22, function(v) State.AlsoTargetPlayers = v; State.NeedsEnemyRestore = true end)
 CreateToggle(CombatPage, "No Attack CD", State.NoAttackCD, 23, function(v) State.NoAttackCD = v end)
 
-CreateToggle(RenderPage, "🎃 ESP Тыкв (Pumpkins XP)", State.ESPPumpkins, 1, function(v) State.ESPPumpkins = v; if v then ESPModule.ScanWorldItems() end end)
-CreateCycleButton(RenderPage, "Дистанция ESP Тыкв", { 1500, 2500, 3500, 5000 }, 3, 2, function(val) State.PumpkinESPMaxDistance = val end)
-CreateToggle(RenderPage, "🧟 ESP Ботов-Зомби (Вид + Дистанция + HP)", State.BotESPEnabled, 3, function(v) State.BotESPEnabled = v end)
-CreateToggle(RenderPage, "Показывать Вид Динозавра-Бота", State.ESP_BotSpecies, 4, function(v) State.ESP_BotSpecies = v end)
-CreateToggle(RenderPage, "Показывать Полоску HP Бота", State.ESP_BotHealth, 5, function(v) State.ESP_BotHealth = v end)
-CreateCycleButton(RenderPage, "Дистанция ESP Ботов", { 1000, 2500, 4000, 6000 }, 2, 6, function(val) State.BotESPMaxDistance = val end)
-CreateToggle(RenderPage, "Unlock Camera (Отдаление без лимита)", State.UnlockCamera, 7, function(v) State.UnlockCamera = v end)
-CreateToggle(RenderPage, "Night Vision (Светло как днем)", State.NightVision, 8, function(v) State.NightVision = v end)
-CreateToggle(RenderPage, "No Blur (Убрать размытие)", State.NoBlur, 9, function(v) State.NoBlur = v end)
-CreateToggle(RenderPage, "No Sleep Screen (Убрать темный экран)", State.NoSleepScreen, 10, function(v) State.NoSleepScreen = v; if v then Visuals.ScanSleepGui() end end)
-CreateToggle(RenderPage, "ESP Костей", State.ESPBones, 11, function(v) State.ESPBones = v; if v then ESPModule.ScanWorldItems() end end)
-CreateToggle(RenderPage, "ESP Еды / Трупов", State.ESPCorpses, 12, function(v) State.ESPCorpses = v; if v then ESPModule.ScanWorldItems() end end)
+-- Halloween ESP Tab (с отдельным выбором Белой, Зеленой, Желтой и Обычной тыквы)
+CreateToggle(RenderPage, "🎃 Мастер ESP Тыкв (Вкл/Выкл все)", State.ESPPumpkins, 1, function(v) State.ESPPumpkins = v; if v then ESPModule.ScanWorldItems() end end)
+CreateToggle(RenderPage, "⚪ [Тыква] Белая (White Pumpkin)", State.PumpkinTypes.White, 2, function(v) State.PumpkinTypes.White = v end)
+CreateToggle(RenderPage, "🟡 [Тыква] Желтая (Yellow / Gold)", State.PumpkinTypes.Yellow, 3, function(v) State.PumpkinTypes.Yellow = v end)
+CreateToggle(RenderPage, "🟢 [Тыква] Зеленая (Green Pumpkin)", State.PumpkinTypes.Green, 4, function(v) State.PumpkinTypes.Green = v end)
+CreateToggle(RenderPage, "🎃 [Тыква] Обычная (Normal Orange)", State.PumpkinTypes.Normal, 5, function(v) State.PumpkinTypes.Normal = v end)
+CreateCycleButton(RenderPage, "Дистанция ESP Тыкв", { 1500, 2500, 3500, 5000 }, 3, 6, function(val) State.PumpkinESPMaxDistance = val end)
+
+CreateToggle(RenderPage, "🧟 ESP Ботов-Зомби (Вид + Дистанция + HP)", State.BotESPEnabled, 7, function(v) State.BotESPEnabled = v end)
+CreateToggle(RenderPage, "Показывать Вид Динозавра-Бота", State.ESP_BotSpecies, 8, function(v) State.ESP_BotSpecies = v end)
+CreateToggle(RenderPage, "Показывать Полоску HP Бота", State.ESP_BotHealth, 9, function(v) State.ESP_BotHealth = v end)
+CreateCycleButton(RenderPage, "Дистанция ESP Ботов", { 1000, 2500, 4000, 6000 }, 2, 10, function(val) State.BotESPMaxDistance = val end)
+CreateToggle(RenderPage, "Unlock Camera (Отдаление без лимита)", State.UnlockCamera, 11, function(v) State.UnlockCamera = v end)
+CreateToggle(RenderPage, "Night Vision (Светло как днем)", State.NightVision, 12, function(v) State.NightVision = v end)
+CreateToggle(RenderPage, "No Blur (Убрать размытие)", State.NoBlur, 13, function(v) State.NoBlur = v end)
+CreateToggle(RenderPage, "No Sleep Screen (Убрать темный экран)", State.NoSleepScreen, 14, function(v) State.NoSleepScreen = v; if v then Visuals.ScanSleepGui() end end)
+CreateToggle(RenderPage, "ESP Костей", State.ESPBones, 15, function(v) State.ESPBones = v; if v then ESPModule.ScanWorldItems() end end)
+CreateToggle(RenderPage, "ESP Еды / Трупов", State.ESPCorpses, 16, function(v) State.ESPCorpses = v; if v then ESPModule.ScanWorldItems() end end)
 
 CreateToggle(ToolsPage, "Auto Clean (Вшитый пакет мытья)", State.AutoClean, 1, function(v) State.AutoClean = v; if v then Utils.Notify("Auto Clean", "Пакетное мытье активировано!") end end)
 CreateToggle(ToolsPage, "Save Dino (Уход под землю от ботов)", false, 2, function(v) SaveDino.SetEnabled(v) end)
@@ -1487,4 +1593,4 @@ Utils.Drag(TopBar, MainFrame, nil); Utils.Drag(MiniIcon, MiniIcon, RestoreUI)
 Utils.Track(MinimizeBtn.Activated:Connect(MinimizeUI)); Utils.Track(DeactivateBtn.Activated:Connect(DeactivateScript))
 
 Visuals.Init(); Survival.Init(); SaveDino.Init(); Combat.Init(); ESPModule.Init()
-Utils.Notify("Apex-Halloween", "v1.3 успешно запущен!")
+Utils.Notify("Apex-Halloween", "v1.4 запущен! Добавлены 4 вида тыкв.")
