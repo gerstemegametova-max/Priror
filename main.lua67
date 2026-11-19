@@ -1,0 +1,325 @@
+--// ESP с эффектами + анимированное меню (FIXED & OPTIMIZED)
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local LocalPlayer = Players.LocalPlayer
+
+------------------------------------------------------------
+-- НАСТРОЙКИ
+------------------------------------------------------------
+local ESP_MAX_DIST = 350
+local PULSE_LOW_HP = true
+local PARTICLES = true
+local OPEN_KEY = Enum.KeyCode.RightShift
+
+------------------------------------------------------------
+-- СОСТОЯНИЕ
+------------------------------------------------------------
+local espOn = false
+local espMap = {}
+local espFolder = Instance.new("Folder")
+espFolder.Name = "ESP_Folder"
+espFolder.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+------------------------------------------------------------
+-- ESP СОЗДАНИЕ
+------------------------------------------------------------
+local function createESP(player)
+	if espMap[player] or not player.Character then return end
+	local root = player.Character:FindFirstChild("HumanoidRootPart")
+	local hum = player.Character:FindFirstChildOfClass("Humanoid")
+	if not root or not hum then return end
+
+	local gui = Instance.new("BillboardGui")
+	gui.Name = "ESP_" .. player.Name
+	gui.Adornee = root
+	gui.Size = UDim2.fromOffset(70, 26)
+	gui.StudsOffsetWorldSpace = Vector3.new(0, 3.2, 0)
+	gui.AlwaysOnTop = true
+	gui.MaxDistance = ESP_MAX_DIST
+	gui.Parent = espFolder
+
+	local bg = Instance.new("Frame")
+	bg.Size = UDim2.new(1, 0, 0, 7)
+	bg.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+	bg.BackgroundTransparency = 0.35
+	bg.BorderSizePixel = 0
+	bg.Parent = gui
+	Instance.new("UICorner", bg).CornerRadius = UDim.new(1, 0)
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = Color3.fromRGB(255, 255, 255)
+	stroke.Transparency = 0.7
+	stroke.Thickness = 1
+	stroke.Parent = bg
+
+	local fill = Instance.new("Frame")
+	fill.Size = UDim2.fromScale(math.clamp(hum.Health / hum.MaxHealth, 0, 1), 1)
+	fill.BackgroundColor3 = Color3.fromRGB(90, 230, 110)
+	fill.BorderSizePixel = 0
+	fill.Parent = bg
+	Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0)
+
+	local glow = Instance.new("ImageLabel")
+	glow.Size = UDim2.fromOffset(110, 26)
+	glow.Position = UDim2.fromOffset(-20, -9)
+	glow.BackgroundTransparency = 1
+	glow.Image = "rbxassetid://5028857084"
+	glow.ImageColor3 = Color3.fromRGB(90, 230, 110)
+	glow.ImageTransparency = 0.75
+	glow.ScaleType = Enum.ScaleType.Slice
+	glow.Parent = gui
+
+	local name = Instance.new("TextLabel")
+	name.Size = UDim2.new(1, 0, 0, 14)
+	name.Position = UDim2.fromOffset(0, 9)
+	name.BackgroundTransparency = 1
+	name.Text = player.DisplayName
+	name.TextColor3 = Color3.new(1, 1, 1)
+	name.TextStrokeTransparency = 0.5
+	name.TextSize = 11
+	name.Font = Enum.Font.GothamBold
+	name.Parent = gui
+
+	-- Партиклы
+	local attach, emitter
+	if PARTICLES then
+		attach = Instance.new("Attachment")
+		attach.Position = Vector3.new(0, 1.2, 0)
+		attach.Parent = root
+		
+		emitter = Instance.new("ParticleEmitter")
+		emitter.Texture = "rbxassetid://258128463"
+		emitter.Rate = 4
+		emitter.Lifetime = NumberRange.new(0.8, 1.4)
+		emitter.Speed = NumberRange.new(0.4, 1)
+		emitter.SpreadAngle = Vector2.new(25, 25)
+		emitter.Size = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0.15),
+			NumberSequenceKeypoint.new(0.5, 0.35),
+			NumberSequenceKeypoint.new(1, 0),
+		})
+		emitter.Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0.4),
+			NumberSequenceKeypoint.new(1, 1),
+		})
+		emitter.LightEmission = 1
+		emitter.Color = ColorSequence.new(Color3.fromRGB(140, 255, 170))
+		emitter.Parent = attach
+	end
+
+	local conn = hum.HealthChanged:Connect(function(hp)
+		local data = espMap[player]
+		if not data or not data.gui.Parent then conn:Disconnect() return end
+		local ratio = math.clamp(hp / hum.MaxHealth, 0, 1)
+		data.fill:TweenSize(UDim2.fromScale(ratio, 1), Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.25, true)
+		
+		local color = ratio > 0.5 and Color3.fromRGB(90, 230, 110)
+			or ratio > 0.25 and Color3.fromRGB(230, 200, 80)
+			or Color3.fromRGB(230, 80, 80)
+		data.fill.BackgroundColor3 = color
+		data.glow.ImageColor3 = color
+	end)
+
+	espMap[player] = {gui = gui, fill = fill, glow = glow, attach = attach, conn = conn}
+end
+
+local function removeESP(player)
+	local data = espMap[player]
+	if data then
+		if data.conn then data.conn:Disconnect() end
+		if data.gui then data.gui:Destroy() end
+		-- ФИКС: Удаляем партиклы, чтобы не было утечки памяти
+		if data.attach then data.attach:Destroy() end 
+		espMap[player] = nil
+	end
+end
+
+local function syncESP()
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr ~= LocalPlayer then
+			if espOn then createESP(plr) else removeESP(plr) end
+		end
+	end
+end
+
+Players.PlayerAdded:Connect(function(plr)
+	plr.CharacterAdded:Connect(function()
+		-- ФИКС: Сначала удаляем старую привязку, потом создаем новую
+		removeESP(plr) 
+		if espOn then task.wait(0.3) createESP(plr) end
+	end)
+end)
+Players.PlayerRemoving:Connect(removeESP)
+
+------------------------------------------------------------
+-- ПУЛЬСАЦИЯ
+------------------------------------------------------------
+local pulseTime = 0
+RunService.RenderStepped:Connect(function(dt)
+	pulseTime += dt
+	if not espOn then return end
+	
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr ~= LocalPlayer and not espMap[plr] and plr.Character then
+			createESP(plr)
+		end
+	end
+	
+	if PULSE_LOW_HP then
+		local sin = math.sin(pulseTime * 5) * 0.5 + 0.5
+		for plr, data in pairs(espMap) do
+			local hum = plr.Character and plr.Character:FindFirstChildOfClass("Humanoid")
+			if hum then
+				local ratio = hum.Health / hum.MaxHealth
+				if ratio < 0.35 then
+					data.glow.ImageTransparency = 0.85 - sin * 0.45
+				else
+					data.glow.ImageTransparency = 0.75
+				end
+			end
+		end
+	end
+end)
+
+------------------------------------------------------------
+-- АНИМИРОВАННОЕ МЕНЮ
+------------------------------------------------------------
+local gui = Instance.new("ScreenGui")
+gui.Name = "ESPMenu"
+gui.ResetOnSpawn = false
+gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+-- Кнопка-открывалка
+local openBtn = Instance.new("TextButton")
+openBtn.Size = UDim2.fromOffset(46, 46)
+openBtn.Position = UDim2.new(1, -60, 0.5, -23)
+openBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
+openBtn.Text = "👁"
+openBtn.TextSize = 22
+openBtn.BorderSizePixel = 0
+openBtn.Parent = gui
+Instance.new("UICorner", openBtn).CornerRadius = UDim.new(1, 0)
+
+local openStroke = Instance.new("UIStroke")
+openStroke.Color = Color3.fromRGB(90, 230, 110)
+openStroke.Transparency = 0.5
+openStroke.Thickness = 2
+openStroke.Parent = openBtn
+
+-- Панель меню
+local canvas = Instance.new("CanvasGroup")
+canvas.Size = UDim2.fromOffset(210, 90)
+-- Ставим позицию изначально левее кнопки
+canvas.Position = UDim2.new(1, -280, 0.5, -45) 
+canvas.BackgroundColor3 = Color3.fromRGB(28, 28, 36)
+canvas.BorderSizePixel = 0
+canvas.GroupTransparency = 1
+canvas.Visible = false
+canvas.Parent = gui
+Instance.new("UICorner", canvas).CornerRadius = UDim.new(0, 10)
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -20, 0, 24)
+title.Position = UDim2.fromOffset(10, 6)
+title.BackgroundTransparency = 1
+title.Text = "МЕНЮ"
+title.TextColor3 = Color3.new(1, 1, 1)
+title.TextSize = 13
+title.Font = Enum.Font.GothamBold
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = canvas
+
+local function makeToggle(label, y, callback)
+	local btn = Instance.new("TextButton")
+	btn.Size = UDim2.new(1, -20, 0, 34)
+	btn.Position = UDim2.fromOffset(10, y)
+	btn.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+	btn.TextColor3 = Color3.new(1, 1, 1)
+	btn.TextSize = 13
+	btn.Font = Enum.Font.GothamMedium
+	btn.Text = label .. ": ВЫКЛ"
+	btn.BorderSizePixel = 0
+	btn.AutoButtonColor = false
+	btn.Parent = canvas
+	Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 7)
+
+	local state = false
+	btn.MouseButton1Click:Connect(function()
+		state = not state
+		callback(state)
+		
+		local target = state and Color3.fromRGB(55, 140, 85) or Color3.fromRGB(45, 45, 55)
+		TweenService:Create(btn, TweenInfo.new(0.2, Enum.EasingStyle.Quad), {BackgroundColor3 = target}):Play()
+		
+		local pop = TweenService:Create(btn, TweenInfo.new(0.12, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Size = UDim2.new(1, -14, 0, 38)})
+		pop:Play()
+		pop.Completed:Connect(function()
+			TweenService:Create(btn, TweenInfo.new(0.15), {Size = UDim2.new(1, -20, 0, 34)}):Play()
+		end)
+		
+		btn.Text = label .. (state and ": ВКЛ" or ": ВЫКЛ")
+	end)
+	return btn
+end
+
+makeToggle("✨ ESP + ЭФФЕКТЫ", 34, function(state)
+	espOn = state
+	syncESP()
+end)
+
+-- Открытие/закрытие с анимацией
+local isOpen = false
+local function setMenu(open)
+	isOpen = open
+	if open then
+		canvas.Visible = true
+		canvas.GroupTransparency = 1
+		TweenService:Create(canvas, TweenInfo.new(0.3, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
+			GroupTransparency = 0,
+		}):Play()
+	else
+		local tw = TweenService:Create(canvas, TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+			GroupTransparency = 1,
+		})
+		tw:Play()
+		tw.Completed:Connect(function() canvas.Visible = false end)
+	end
+	TweenService:Create(openBtn, TweenInfo.new(0.25, Enum.EasingStyle.Back), {
+		Rotation = open and 45 or 0,
+	}):Play()
+end
+
+openBtn.MouseButton1Click:Connect(function() setMenu(not isOpen) end)
+UserInputService.InputBegan:Connect(function(input, gpe)
+	if gpe then return end
+	if input.KeyCode == OPEN_KEY then setMenu(not isOpen) end
+end)
+
+------------------------------------------------------------
+-- DRAG ДЛЯ КНОПКИ (ФИКС: Меню теперь двигается синхронно)
+------------------------------------------------------------
+local dragging, dragStart, startPosBtn, startPosCanvas
+openBtn.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		dragging = true
+		dragStart = input.Position
+		startPosBtn = openBtn.Position
+		startPosCanvas = canvas.Position
+		input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then dragging = false end
+		end)
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+		local delta = input.Position - dragStart
+		-- Двигаем кнопку
+		openBtn.Position = UDim2.new(startPosBtn.X.Scale, startPosBtn.X.Offset + delta.X, startPosBtn.Y.Scale, startPosBtn.Y.Offset + delta.Y)
+		-- Двигаем меню на то же расстояние
+		canvas.Position = UDim2.new(startPosCanvas.X.Scale, startPosCanvas.X.Offset + delta.X, startPosCanvas.Y.Scale, startPosCanvas.Y.Offset + delta.Y)
+	end
+end)
