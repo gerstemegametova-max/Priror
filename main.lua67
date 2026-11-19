@@ -1,325 +1,513 @@
---// ESP с эффектами + анимированное меню (FIXED & OPTIMIZED)
+--!strict
+--[[
+    Универсальный отладочный и тренировочный инструментарий для Roblox Studio
+    Включает:
+    1. Систему захвата цели (Lock-On) с плавной доводкой камеры поверх стандартного контроллера.
+    2. Оптимизированный визуальный оверлей (Debug Overlay) с индикатором здоровья,
+       мягким свечением, пульсацией при низком HP и лёгкими частицами.
+]]
 
+-- ============================================================================
+-- 1. БЛОК НАСТРОЕК (КОНФИГУРАЦИЯ)
+-- ============================================================================
+local CONFIG = {
+	-- Настройки Lock-On (Захват цели)
+	LOCK_ENABLED = true,
+	LOCK_KEY = Enum.UserInputType.MouseButton2, -- Правая кнопка мыши
+	LOCK_ALT_KEY = Enum.KeyCode.E,              -- Дополнительная клавиша для тестов
+	LOCK_RADIUS_PX = 250,                       -- Радиус поиска цели от центра экрана (px)
+	LOCK_SMOOTHNESS = 0.18,                     -- Плавность поворота (0.05 — плавно, 0.5 — резко)
+	LOCK_MAX_DISTANCE = 350,                    -- Максимальная дистанция захвата (studs)
+	LOCK_TARGET_PART = "HumanoidRootPart",      -- Целевая часть тела персонажа
+
+	-- Настройки Debug Overlay (Оверлей над головой)
+	OVERLAY_ENABLED = true,
+	OVERLAY_MAX_DISTANCE = 350,                 -- Дистанция скрытия оверлея (studs)
+	OVERLAY_OFFSET = Vector3.new(0, 3.2, 0),    -- Смещение над головой персонажа
+	OVERLAY_SIZE = UDim2.fromOffset(170, 46),   -- Размер интерфейса в пикселях
+	TWEEN_HP_TIME = 0.25,                       -- Скорость анимации изменения полоски HP
+	TWEEN_FADE_TIME = 0.35,                     -- Скорость плавного появления оверлея
+
+	-- Цветовая палитра здоровья
+	COLOR_HIGH = Color3.fromRGB(72, 235, 130),  -- > 65% HP (Зелёный)
+	COLOR_MID = Color3.fromRGB(255, 208, 64),   -- > 30% HP (Жёлтый)
+	COLOR_LOW = Color3.fromRGB(245, 70, 85),    -- <= 30% HP (Красный)
+
+	-- Настройки частиц и эффектов
+	PARTICLES_ENABLED = true,
+	PARTICLE_RATE = 4,                          -- Частота спавна частиц (3-5 для слабых устройств)
+	PULSE_SPEED = 7,                            -- Скорость пульсации свечения при низком HP
+}
+
+-- ============================================================================
+-- 2. СЕРВИСЫ И ПЕРЕМЕННЫЕ СОСТОЯНИЯ
+-- ============================================================================
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
-local LocalPlayer = Players.LocalPlayer
+local TweenService = game:GetService("TweenService")
+local Workspace = game:GetService("Workspace")
 
-------------------------------------------------------------
--- НАСТРОЙКИ
-------------------------------------------------------------
-local ESP_MAX_DIST = 350
-local PULSE_LOW_HP = true
-local PARTICLES = true
-local OPEN_KEY = Enum.KeyCode.RightShift
+local localPlayer = Players.LocalPlayer
+local camera: Camera? = Workspace.CurrentCamera
 
-------------------------------------------------------------
--- СОСТОЯНИЕ
-------------------------------------------------------------
-local espOn = false
-local espMap = {}
-local espFolder = Instance.new("Folder")
-espFolder.Name = "ESP_Folder"
-espFolder.Parent = LocalPlayer:WaitForChild("PlayerGui")
+-- Состояние захвата цели
+local isLocking = false
+local currentTarget: Model? = nil
 
-------------------------------------------------------------
--- ESP СОЗДАНИЕ
-------------------------------------------------------------
-local function createESP(player)
-	if espMap[player] or not player.Character then return end
-	local root = player.Character:FindFirstChild("HumanoidRootPart")
-	local hum = player.Character:FindFirstChildOfClass("Humanoid")
-	if not root or not hum then return end
+-- Реестр активных оверлеев и подключений игроков
+type OverlayData = {
+	player: Player,
+	character: Model,
+	humanoid: Humanoid,
+	rootPart: BasePart,
+	head: BasePart,
+	billboard: BillboardGui,
+	hpFill: Frame,
+	glowStroke: UIStroke,
+	glowImage: ImageLabel,
+	attachment: Attachment?,
+	emitter: ParticleEmitter?,
+	connections: { RBXScriptConnection },
+	isLowHp: boolean,
+	isVisible: boolean,
+	fadeReady: boolean,
+}
 
-	local gui = Instance.new("BillboardGui")
-	gui.Name = "ESP_" .. player.Name
-	gui.Adornee = root
-	gui.Size = UDim2.fromOffset(70, 26)
-	gui.StudsOffsetWorldSpace = Vector3.new(0, 3.2, 0)
-	gui.AlwaysOnTop = true
-	gui.MaxDistance = ESP_MAX_DIST
-	gui.Parent = espFolder
+local activeOverlays: { [Player]: OverlayData } = {}
+local playerConnections: { [Player]: RBXScriptConnection } = {}
 
-	local bg = Instance.new("Frame")
-	bg.Size = UDim2.new(1, 0, 0, 7)
-	bg.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
-	bg.BackgroundTransparency = 0.35
-	bg.BorderSizePixel = 0
-	bg.Parent = gui
-	Instance.new("UICorner", bg).CornerRadius = UDim.new(1, 0)
+-- ============================================================================
+-- 3. МОДУЛЬ DEBUG OVERLAY (СОЗДАНИЕ, ОБНОВЛЕНИЕ, ОЧИСТКА)
+-- ============================================================================
 
-	local stroke = Instance.new("UIStroke")
-	stroke.Color = Color3.fromRGB(255, 255, 255)
-	stroke.Transparency = 0.7
-	stroke.Thickness = 1
-	stroke.Parent = bg
+-- Возвращает цвет в зависимости от процента здоровья
+local function getHealthColor(percent: number): Color3
+	if percent > 0.65 then
+		return CONFIG.COLOR_HIGH
+	elseif percent > 0.30 then
+		return CONFIG.COLOR_MID
+	else
+		return CONFIG.COLOR_LOW
+	end
+end
 
-	local fill = Instance.new("Frame")
-	fill.Size = UDim2.fromScale(math.clamp(hum.Health / hum.MaxHealth, 0, 1), 1)
-	fill.BackgroundColor3 = Color3.fromRGB(90, 230, 110)
-	fill.BorderSizePixel = 0
-	fill.Parent = bg
-	Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0)
+-- Плавная синхронизация полоски здоровья и цветов при получении урона/лечении
+local function syncOverlay(data: OverlayData)
+	local hum = data.humanoid
+	if not hum or hum.MaxHealth <= 0 then return end
 
-	local glow = Instance.new("ImageLabel")
-	glow.Size = UDim2.fromOffset(110, 26)
-	glow.Position = UDim2.fromOffset(-20, -9)
-	glow.BackgroundTransparency = 1
-	glow.Image = "rbxassetid://5028857084"
-	glow.ImageColor3 = Color3.fromRGB(90, 230, 110)
-	glow.ImageTransparency = 0.75
-	glow.ScaleType = Enum.ScaleType.Slice
-	glow.Parent = gui
+	local ratio = math.clamp(hum.Health / hum.MaxHealth, 0, 1)
+	local targetColor = getHealthColor(ratio)
+	data.isLowHp = ratio <= 0.30
 
-	local name = Instance.new("TextLabel")
-	name.Size = UDim2.new(1, 0, 0, 14)
-	name.Position = UDim2.fromOffset(0, 9)
-	name.BackgroundTransparency = 1
-	name.Text = player.DisplayName
-	name.TextColor3 = Color3.new(1, 1, 1)
-	name.TextStrokeTransparency = 0.5
-	name.TextSize = 11
-	name.Font = Enum.Font.GothamBold
-	name.Parent = gui
+	-- Если HP восстановилось выше 30%, возвращаем базовую прозрачность свечения
+	if not data.isLowHp and data.fadeReady then
+		data.glowStroke.Transparency = 0.25
+		data.glowImage.ImageTransparency = 0.45
+	end
 
-	-- Партиклы
-	local attach, emitter
-	if PARTICLES then
-		attach = Instance.new("Attachment")
-		attach.Position = Vector3.new(0, 1.2, 0)
-		attach.Parent = root
-		
+	local tweenInfo = TweenInfo.new(CONFIG.TWEEN_HP_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+	TweenService:Create(data.hpFill, tweenInfo, {
+		Size = UDim2.fromScale(ratio, 1),
+		BackgroundColor3 = targetColor,
+	}):Play()
+
+	TweenService:Create(data.glowStroke, tweenInfo, {
+		Color = targetColor,
+	}):Play()
+
+	TweenService:Create(data.glowImage, tweenInfo, {
+		ImageColor3 = targetColor,
+	}):Play()
+
+	if data.emitter then
+		data.emitter.Color = ColorSequence.new(targetColor, Color3.new(1, 1, 1))
+	end
+end
+
+-- Полная очистка UI, частиц и подключений без утечек памяти
+local function removeOverlay(player: Player)
+	local data = activeOverlays[player]
+	if not data then return end
+
+	for _, conn in ipairs(data.connections) do
+		if conn.Connected then
+			conn:Disconnect()
+		end
+	end
+	table.clear(data.connections)
+
+	if data.billboard and data.billboard.Parent then
+		data.billboard:Destroy()
+	end
+
+	if data.attachment and data.attachment.Parent then
+		data.attachment:Destroy()
+	end
+
+	activeOverlays[player] = nil
+end
+
+-- Создание BillboardGui и системы частиц для персонажа
+local function createOverlay(player: Player, character: Model)
+	if not CONFIG.OVERLAY_ENABLED or player == localPlayer then return end
+
+	removeOverlay(player)
+
+	local humanoid = character:WaitForChild("Humanoid", 5) :: Humanoid?
+	local head = character:WaitForChild("Head", 5) :: BasePart?
+	local rootPart = character:WaitForChild("HumanoidRootPart", 5) :: BasePart?
+
+	-- Защита от гонки потоков, если персонаж успел пересоздаться во время ожидания
+	if player.Character ~= character then return end
+	if not humanoid or not head or not rootPart or humanoid.Health <= 0 then
+		return
+	end
+
+	-- 1. Основной контейнер BillboardGui
+	local billboard = Instance.new("BillboardGui")
+	billboard.Name = "DebugInfoOverlay"
+	billboard.Adornee = head
+	billboard.Size = CONFIG.OVERLAY_SIZE
+	billboard.StudsOffset = CONFIG.OVERLAY_OFFSET
+	billboard.AlwaysOnTop = true
+	billboard.LightInfluence = 0
+	billboard.MaxDistance = CONFIG.OVERLAY_MAX_DISTANCE
+	billboard.ResetOnSpawn = false
+
+	local container = Instance.new("Frame")
+	container.Name = "Container"
+	container.Size = UDim2.fromScale(1, 1)
+	container.BackgroundTransparency = 1
+	container.Parent = billboard
+
+	-- Имя игрока (старт с прозрачностью 1 для плавного появления)
+	local nameLabel = Instance.new("TextLabel")
+	nameLabel.Name = "PlayerName"
+	nameLabel.Size = UDim2.new(1, 0, 0.45, 0)
+	nameLabel.BackgroundTransparency = 1
+	nameLabel.Text = player.DisplayName
+	nameLabel.TextColor3 = Color3.fromRGB(245, 247, 250)
+	nameLabel.TextTransparency = 1
+	nameLabel.TextStrokeTransparency = 1
+	nameLabel.TextStrokeColor3 = Color3.fromRGB(15, 18, 24)
+	nameLabel.Font = Enum.Font.GothamBold
+	nameLabel.TextSize = 13
+	nameLabel.Parent = container
+
+	-- Подложка полоски здоровья
+	local barBg = Instance.new("Frame")
+	barBg.Name = "BarBackground"
+	barBg.Size = UDim2.new(0.86, 0, 0.22, 0)
+	barBg.Position = UDim2.new(0.07, 0, 0.54, 0)
+	barBg.BackgroundColor3 = Color3.fromRGB(22, 25, 33)
+	barBg.BackgroundTransparency = 1
+	barBg.BorderSizePixel = 0
+	barBg.Parent = container
+
+	local bgCorner = Instance.new("UICorner")
+	bgCorner.CornerRadius = UDim.new(1, 0)
+	bgCorner.Parent = barBg
+
+	-- Мягкая внешняя обводка (UIStroke)
+	local glowStroke = Instance.new("UIStroke")
+	glowStroke.Thickness = 1.6
+	glowStroke.Transparency = 1
+	glowStroke.Color = CONFIG.COLOR_HIGH
+	glowStroke.Parent = barBg
+
+	-- Радиальное свечение за полоской (без обрезки границами CanvasGroup)
+	local glowImage = Instance.new("ImageLabel")
+	glowImage.Name = "SoftGlow"
+	glowImage.Size = UDim2.new(1.25, 0, 2.6, 0)
+	glowImage.Position = UDim2.fromScale(0.5, 0.5)
+	glowImage.AnchorPoint = Vector2.new(0.5, 0.5)
+	glowImage.BackgroundTransparency = 1
+	glowImage.Image = "rbxassetid://5028857084"
+	glowImage.ImageColor3 = CONFIG.COLOR_HIGH
+	glowImage.ImageTransparency = 1
+	glowImage.ZIndex = 0
+	glowImage.Parent = barBg
+
+	-- Заполнение полоски здоровья
+	local hpFill = Instance.new("Frame")
+	hpFill.Name = "HealthFill"
+	hpFill.Size = UDim2.fromScale(1, 1)
+	hpFill.BackgroundColor3 = CONFIG.COLOR_HIGH
+	hpFill.BackgroundTransparency = 1
+	hpFill.BorderSizePixel = 0
+	hpFill.ZIndex = 2
+	hpFill.Parent = barBg
+
+	local fillCorner = Instance.new("UICorner")
+	fillCorner.CornerRadius = UDim.new(1, 0)
+	fillCorner.Parent = hpFill
+
+	local fillGradient = Instance.new("UIGradient")
+	fillGradient.Rotation = 90
+	fillGradient.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 255, 255)),
+		ColorSequenceKeypoint.new(1, Color3.fromRGB(195, 195, 195)),
+	})
+	fillGradient.Parent = hpFill
+
+	billboard.Parent = head
+
+	-- 2. Лёгкие частицы над головой (Attachment + ParticleEmitter)
+	local attachment: Attachment? = nil
+	local emitter: ParticleEmitter? = nil
+
+	if CONFIG.PARTICLES_ENABLED then
+		attachment = Instance.new("Attachment")
+		attachment.Name = "DebugParticleAnchor"
+		attachment.Position = Vector3.new(0, 1.2, 0)
+		attachment.Parent = head
+
 		emitter = Instance.new("ParticleEmitter")
-		emitter.Texture = "rbxassetid://258128463"
-		emitter.Rate = 4
-		emitter.Lifetime = NumberRange.new(0.8, 1.4)
-		emitter.Speed = NumberRange.new(0.4, 1)
-		emitter.SpreadAngle = Vector2.new(25, 25)
+		emitter.Name = "DebugSparks"
+		emitter.Texture = "rbxassetid://243660364"
+		emitter.Rate = CONFIG.PARTICLE_RATE
+		emitter.Lifetime = NumberRange.new(1.0, 1.6)
+		emitter.Speed = NumberRange.new(1.2, 2.2)
+		emitter.SpreadAngle = Vector2.new(35, 35)
+		emitter.Acceleration = Vector3.new(0, 1.5, 0)
 		emitter.Size = NumberSequence.new({
-			NumberSequenceKeypoint.new(0, 0.15),
-			NumberSequenceKeypoint.new(0.5, 0.35),
+			NumberSequenceKeypoint.new(0, 0.18),
+			NumberSequenceKeypoint.new(0.7, 0.12),
 			NumberSequenceKeypoint.new(1, 0),
 		})
 		emitter.Transparency = NumberSequence.new({
-			NumberSequenceKeypoint.new(0, 0.4),
+			NumberSequenceKeypoint.new(0, 0.3),
 			NumberSequenceKeypoint.new(1, 1),
 		})
-		emitter.LightEmission = 1
-		emitter.Color = ColorSequence.new(Color3.fromRGB(140, 255, 170))
-		emitter.Parent = attach
+		emitter.LightEmission = 0.8
+		emitter.Parent = attachment
 	end
 
-	local conn = hum.HealthChanged:Connect(function(hp)
-		local data = espMap[player]
-		if not data or not data.gui.Parent then conn:Disconnect() return end
-		local ratio = math.clamp(hp / hum.MaxHealth, 0, 1)
-		data.fill:TweenSize(UDim2.fromScale(ratio, 1), Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.25, true)
-		
-		local color = ratio > 0.5 and Color3.fromRGB(90, 230, 110)
-			or ratio > 0.25 and Color3.fromRGB(230, 200, 80)
-			or Color3.fromRGB(230, 80, 80)
-		data.fill.BackgroundColor3 = color
-		data.glow.ImageColor3 = color
-	end)
+	-- 3. Сохраняем структуру и подписываемся на события
+	local data: OverlayData = {
+		player = player,
+		character = character,
+		humanoid = humanoid,
+		rootPart = rootPart,
+		head = head,
+		billboard = billboard,
+		hpFill = hpFill,
+		glowStroke = glowStroke,
+		glowImage = glowImage,
+		attachment = attachment,
+		emitter = emitter,
+		connections = {},
+		isLowHp = false,
+		isVisible = true,
+		fadeReady = false,
+	}
 
-	espMap[player] = {gui = gui, fill = fill, glow = glow, attach = attach, conn = conn}
-end
+	table.insert(data.connections, humanoid.HealthChanged:Connect(function()
+		syncOverlay(data)
+	end))
 
-local function removeESP(player)
-	local data = espMap[player]
-	if data then
-		if data.conn then data.conn:Disconnect() end
-		if data.gui then data.gui:Destroy() end
-		-- ФИКС: Удаляем партиклы, чтобы не было утечки памяти
-		if data.attach then data.attach:Destroy() end 
-		espMap[player] = nil
-	end
-end
+	table.insert(data.connections, humanoid.Died:Connect(function()
+		removeOverlay(player)
+	end))
 
-local function syncESP()
-	for _, plr in ipairs(Players:GetPlayers()) do
-		if plr ~= LocalPlayer then
-			if espOn then createESP(plr) else removeESP(plr) end
+	table.insert(data.connections, character.AncestryChanged:Connect(function(_, parent)
+		if not parent then
+			removeOverlay(player)
 		end
-	end
+	end))
+
+	activeOverlays[player] = data
+	syncOverlay(data)
+
+	-- Плавное появление элементов (Fade-In)
+	local fadeInfo = TweenInfo.new(CONFIG.TWEEN_FADE_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+	TweenService:Create(nameLabel, fadeInfo, { TextTransparency = 0, TextStrokeTransparency = 0.35 }):Play()
+	TweenService:Create(barBg, fadeInfo, { BackgroundTransparency = 0.15 }):Play()
+	TweenService:Create(hpFill, fadeInfo, { BackgroundTransparency = 0 }):Play()
+	TweenService:Create(glowStroke, fadeInfo, { Transparency = 0.25 }):Play()
+	TweenService:Create(glowImage, fadeInfo, { ImageTransparency = 0.45 }):Play()
+
+	task.delay(CONFIG.TWEEN_FADE_TIME, function()
+		if activeOverlays[player] == data then
+			data.fadeReady = true
+		end
+	end)
 end
 
-Players.PlayerAdded:Connect(function(plr)
-	plr.CharacterAdded:Connect(function()
-		-- ФИКС: Сначала удаляем старую привязку, потом создаем новую
-		removeESP(plr) 
-		if espOn then task.wait(0.3) createESP(plr) end
-	end)
-end)
-Players.PlayerRemoving:Connect(removeESP)
+-- ============================================================================
+-- 4. МОДУЛЬ LOCK-ON (ПОИСК ЦЕЛИ И ДОВОДКА КАМЕРЫ)
+-- ============================================================================
 
-------------------------------------------------------------
--- ПУЛЬСАЦИЯ
-------------------------------------------------------------
-local pulseTime = 0
-RunService.RenderStepped:Connect(function(dt)
-	pulseTime += dt
-	if not espOn then return end
-	
-	for _, plr in ipairs(Players:GetPlayers()) do
-		if plr ~= LocalPlayer and not espMap[plr] and plr.Character then
-			createESP(plr)
-		end
+-- Проверяет, жив ли персонаж и валидна ли его целевая часть
+local function isValidTarget(character: Model?): (boolean, BasePart?)
+	if not character or not character.Parent then return false, nil end
+
+	local hum = character:FindFirstChildOfClass("Humanoid")
+	local targetPart = character:FindFirstChild(CONFIG.LOCK_TARGET_PART) :: BasePart?
+
+	if not hum or hum.Health <= 0 or not targetPart then
+		return false, nil
 	end
-	
-	if PULSE_LOW_HP then
-		local sin = math.sin(pulseTime * 5) * 0.5 + 0.5
-		for plr, data in pairs(espMap) do
-			local hum = plr.Character and plr.Character:FindFirstChildOfClass("Humanoid")
-			if hum then
-				local ratio = hum.Health / hum.MaxHealth
-				if ratio < 0.35 then
-					data.glow.ImageTransparency = 0.85 - sin * 0.45
-				else
-					data.glow.ImageTransparency = 0.75
+
+	return true, targetPart
+end
+
+-- Ищет ближайшего живого персонажа в радиусе N пикселей от центра экрана
+local function findClosestTarget(): Model?
+	local activeCam = camera
+	if not activeCam then return nil end
+
+	local viewportSize = activeCam.ViewportSize
+	local screenCenter = Vector2.new(viewportSize.X * 0.5, viewportSize.Y * 0.5)
+
+	local bestTarget: Model? = nil
+	local shortestScreenDist = CONFIG.LOCK_RADIUS_PX
+	local camPos = activeCam.CFrame.Position
+
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player ~= localPlayer and player.Character then
+			local valid, targetPart = isValidTarget(player.Character)
+			if valid and targetPart then
+				local worldDist = (targetPart.Position - camPos).Magnitude
+				if worldDist <= CONFIG.LOCK_MAX_DISTANCE then
+					local screenPos, onScreen = activeCam:WorldToViewportPoint(targetPart.Position)
+					if onScreen and screenPos.Z > 0 then
+						local distFromCenter = (Vector2.new(screenPos.X, screenPos.Y) - screenCenter).Magnitude
+						if distFromCenter < shortestScreenDist then
+							shortestScreenDist = distFromCenter
+							bestTarget = player.Character
+						end
+					end
 				end
 			end
 		end
 	end
-end)
 
-------------------------------------------------------------
--- АНИМИРОВАННОЕ МЕНЮ
-------------------------------------------------------------
-local gui = Instance.new("ScreenGui")
-gui.Name = "ESPMenu"
-gui.ResetOnSpawn = false
-gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+	return bestTarget
+end
 
--- Кнопка-открывалка
-local openBtn = Instance.new("TextButton")
-openBtn.Size = UDim2.fromOffset(46, 46)
-openBtn.Position = UDim2.new(1, -60, 0.5, -23)
-openBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
-openBtn.Text = "👁"
-openBtn.TextSize = 22
-openBtn.BorderSizePixel = 0
-openBtn.Parent = gui
-Instance.new("UICorner", openBtn).CornerRadius = UDim.new(1, 0)
+-- Обновление камеры (строго после стандартного контроллера камеры)
+local function onCameraStep(dt: number)
+	if not CONFIG.LOCK_ENABLED or not isLocking then return end
 
-local openStroke = Instance.new("UIStroke")
-openStroke.Color = Color3.fromRGB(90, 230, 110)
-openStroke.Transparency = 0.5
-openStroke.Thickness = 2
-openStroke.Parent = openBtn
+	local activeCam = camera
+	if not activeCam then return end
 
--- Панель меню
-local canvas = Instance.new("CanvasGroup")
-canvas.Size = UDim2.fromOffset(210, 90)
--- Ставим позицию изначально левее кнопки
-canvas.Position = UDim2.new(1, -280, 0.5, -45) 
-canvas.BackgroundColor3 = Color3.fromRGB(28, 28, 36)
-canvas.BorderSizePixel = 0
-canvas.GroupTransparency = 1
-canvas.Visible = false
-canvas.Parent = gui
-Instance.new("UICorner", canvas).CornerRadius = UDim.new(0, 10)
+	local valid, targetPart = isValidTarget(currentTarget)
+	if not valid or not targetPart then
+		currentTarget = findClosestTarget()
+		valid, targetPart = isValidTarget(currentTarget)
+		if not valid or not targetPart then
+			return
+		end
+	end
 
-local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, -20, 0, 24)
-title.Position = UDim2.fromOffset(10, 6)
-title.BackgroundTransparency = 1
-title.Text = "МЕНЮ"
-title.TextColor3 = Color3.new(1, 1, 1)
-title.TextSize = 13
-title.Font = Enum.Font.GothamBold
-title.TextXAlignment = Enum.TextXAlignment.Left
-title.Parent = canvas
+	-- Сохраняем стандартный тип управления камерой Custom
+	if activeCam.CameraType ~= Enum.CameraType.Custom then
+		activeCam.CameraType = Enum.CameraType.Custom
+	end
 
-local function makeToggle(label, y, callback)
-	local btn = Instance.new("TextButton")
-	btn.Size = UDim2.new(1, -20, 0, 34)
-	btn.Position = UDim2.fromOffset(10, y)
-	btn.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
-	btn.TextColor3 = Color3.new(1, 1, 1)
-	btn.TextSize = 13
-	btn.Font = Enum.Font.GothamMedium
-	btn.Text = label .. ": ВЫКЛ"
-	btn.BorderSizePixel = 0
-	btn.AutoButtonColor = false
-	btn.Parent = canvas
-	Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 7)
+	local camPos = activeCam.CFrame.Position
+	local goalCFrame = CFrame.lookAt(camPos, targetPart.Position)
 
-	local state = false
-	btn.MouseButton1Click:Connect(function()
-		state = not state
-		callback(state)
-		
-		local target = state and Color3.fromRGB(55, 140, 85) or Color3.fromRGB(45, 45, 55)
-		TweenService:Create(btn, TweenInfo.new(0.2, Enum.EasingStyle.Quad), {BackgroundColor3 = target}):Play()
-		
-		local pop = TweenService:Create(btn, TweenInfo.new(0.12, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Size = UDim2.new(1, -14, 0, 38)})
-		pop:Play()
-		pop.Completed:Connect(function()
-			TweenService:Create(btn, TweenInfo.new(0.15), {Size = UDim2.new(1, -20, 0, 34)}):Play()
-		end)
-		
-		btn.Text = label .. (state and ": ВКЛ" or ": ВЫКЛ")
+	-- Плавная интерполяция с компенсацией частоты кадров (30 / 60 / 120 FPS)
+	local alpha = 1 - math.exp(-CONFIG.LOCK_SMOOTHNESS * 60 * dt)
+	activeCam.CFrame = activeCam.CFrame:Lerp(goalCFrame, alpha)
+end
+
+-- ============================================================================
+-- 5. ЕДИНЫЙ ЦИКЛ ОПТИМИЗИРОВАННОГО ОБНОВЛЕНИЯ (RENDERSTEPPED)
+-- ============================================================================
+local elapsedAccumulator = 0
+
+local function onRenderStepped(dt: number)
+	local activeCam = camera
+	if not activeCam then return end
+
+	elapsedAccumulator += dt
+	local camPos = activeCam.CFrame.Position
+	local pulseWave: number? = nil
+
+	for _, data in pairs(activeOverlays) do
+		local root = data.rootPart
+		if root and root.Parent then
+			local dist = (root.Position - camPos).Magnitude
+			local shouldBeVisible = dist <= CONFIG.OVERLAY_MAX_DISTANCE
+
+			-- Переключаем рендер и частицы только в момент пересечения порога дистанции
+			if data.isVisible ~= shouldBeVisible then
+				data.isVisible = shouldBeVisible
+				data.billboard.Enabled = shouldBeVisible
+				if data.emitter then
+					data.emitter.Enabled = shouldBeVisible
+				end
+			end
+
+			-- Синусоида вычисляется лениво (1 раз за кадр) и только если в кадре есть раненый игрок
+			if shouldBeVisible and data.isLowHp and data.fadeReady then
+				if not pulseWave then
+					pulseWave = (math.sin(elapsedAccumulator * CONFIG.PULSE_SPEED) + 1) * 0.5
+				end
+				data.glowStroke.Transparency = 0.1 + (pulseWave * 0.55)
+				data.glowImage.ImageTransparency = 0.25 + (pulseWave * 0.55)
+			end
+		end
+	end
+end
+
+-- ============================================================================
+-- 6. ИНИЦИАЛИЗАЦИЯ, ВВОД И ОЧИСТКА ПРИ ВЫХОДЕ ИГРОКА
+-- ============================================================================
+local function setupPlayer(player: Player)
+	if player == localPlayer then return end
+
+	if player.Character then
+		task.spawn(createOverlay, player, player.Character)
+	end
+
+	playerConnections[player] = player.CharacterAdded:Connect(function(character)
+		createOverlay(player, character)
 	end)
-	return btn
 end
 
-makeToggle("✨ ESP + ЭФФЕКТЫ", 34, function(state)
-	espOn = state
-	syncESP()
-end)
-
--- Открытие/закрытие с анимацией
-local isOpen = false
-local function setMenu(open)
-	isOpen = open
-	if open then
-		canvas.Visible = true
-		canvas.GroupTransparency = 1
-		TweenService:Create(canvas, TweenInfo.new(0.3, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
-			GroupTransparency = 0,
-		}):Play()
-	else
-		local tw = TweenService:Create(canvas, TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
-			GroupTransparency = 1,
-		})
-		tw:Play()
-		tw.Completed:Connect(function() canvas.Visible = false end)
+local function cleanupPlayer(player: Player)
+	local conn = playerConnections[player]
+	if conn then
+		if conn.Connected then
+			conn:Disconnect()
+		end
+		playerConnections[player] = nil
 	end
-	TweenService:Create(openBtn, TweenInfo.new(0.25, Enum.EasingStyle.Back), {
-		Rotation = open and 45 or 0,
-	}):Play()
+	removeOverlay(player)
 end
 
-openBtn.MouseButton1Click:Connect(function() setMenu(not isOpen) end)
-UserInputService.InputBegan:Connect(function(input, gpe)
-	if gpe then return end
-	if input.KeyCode == OPEN_KEY then setMenu(not isOpen) end
-end)
-
-------------------------------------------------------------
--- DRAG ДЛЯ КНОПКИ (ФИКС: Меню теперь двигается синхронно)
-------------------------------------------------------------
-local dragging, dragStart, startPosBtn, startPosCanvas
-openBtn.InputBegan:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-		dragging = true
-		dragStart = input.Position
-		startPosBtn = openBtn.Position
-		startPosCanvas = canvas.Position
-		input.Changed:Connect(function()
-			if input.UserInputState == Enum.UserInputState.End then dragging = false end
-		end)
+UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
+	if not CONFIG.LOCK_ENABLED then return end
+	if input.UserInputType == CONFIG.LOCK_KEY or (not gameProcessed and input.KeyCode == CONFIG.LOCK_ALT_KEY) then
+		isLocking = true
+		currentTarget = findClosestTarget()
 	end
 end)
 
-UserInputService.InputChanged:Connect(function(input)
-	if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-		local delta = input.Position - dragStart
-		-- Двигаем кнопку
-		openBtn.Position = UDim2.new(startPosBtn.X.Scale, startPosBtn.X.Offset + delta.X, startPosBtn.Y.Scale, startPosBtn.Y.Offset + delta.Y)
-		-- Двигаем меню на то же расстояние
-		canvas.Position = UDim2.new(startPosCanvas.X.Scale, startPosCanvas.X.Offset + delta.X, startPosCanvas.Y.Scale, startPosCanvas.Y.Offset + delta.Y)
+UserInputService.InputEnded:Connect(function(input: InputObject)
+	if input.UserInputType == CONFIG.LOCK_KEY or input.KeyCode == CONFIG.LOCK_ALT_KEY then
+		isLocking = false
+		currentTarget = nil
 	end
 end)
+
+for _, player in ipairs(Players:GetPlayers()) do
+	setupPlayer(player)
+end
+
+Players.PlayerAdded:Connect(setupPlayer)
+Players.PlayerRemoving:Connect(cleanupPlayer)
+
+Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+	camera = Workspace.CurrentCamera
+end)
+
+RunService:BindToRenderStep("DebugLockOnCamera", Enum.RenderPriority.Camera.Value + 1, onCameraStep)
+RunService.RenderStepped:Connect(onRenderStepped)
