@@ -1,12 +1,12 @@
 --!strict
 --[[
-    NEON DEV & TRAINING SUITE v3.0 (Universal LocalScript)
+    NEON DEV & TRAINING SUITE v3.1 (Universal LocalScript)
     Модули:
     1. Neon Dashed UI (пунктирная рамка меню, переключатель Lime / Red, анимации).
     2. Lock-On System (захват игроков и ботов, FOV-круг, плавная доводка).
     3. Players Visuals (прерывистый 3D-луч до игроков, пунктирные рамки, Chams, частицы).
     4. Bot / NPC ESP (автопоиск NPC в Workspace, оверлеи, подсветка, частицы).
-    5. Physics Lab (WalkSpeed, JumpPower, Air-Jump, Free-Fly, Teleport).
+    5. Physics Lab (WalkSpeed, JumpPower, Air-Jump, Free-Fly, Noclip, Teleport).
 ]]
 
 -- ============================================================================
@@ -35,7 +35,7 @@ local STATE = {
 	-- Вкладка 1: Lock-On
 	LockEnabled = true,
 	LockToggleMode = false,
-	LockIncludeBots = true, -- Разрешить захват ботов/манекенов
+	LockIncludeBots = true,
 	LockKey = Enum.UserInputType.MouseButton2,
 	LockAltKey = Enum.KeyCode.E,
 	LockRadiusPx = 220,
@@ -44,15 +44,14 @@ local STATE = {
 	LockTargetPart = "HumanoidRootPart",
 	ShowFovCircle = true,
 
-	-- Вкладка 2: Players (Игроки + прерывистые линии + частицы)
+	-- Вкладка 2: Players
 	PlayerOverlayEnabled = true,
-	PlayerDashedTracers = true, -- Прерывистая линия от вас к игрокам
+	PlayerDashedTracers = true,
 	PlayerHighlight = true,
 	ParticlesEnabled = true,
-	ParticleStyle = "BOTH", -- "SPARKS", "AURA", "BOTH"
 	MaxDistance = 350,
 
-	-- Вкладка 3: Bot ESP (Боты / NPC)
+	-- Вкладка 3: Bot ESP
 	BotEspEnabled = true,
 	BotHighlight = true,
 	BotParticles = true,
@@ -64,6 +63,7 @@ local STATE = {
 	InfiniteJump = false,
 	FlyEnabled = false,
 	FlySpeed = 65,
+	NoclipEnabled = false,
 }
 
 -- Цветовая палитра
@@ -71,8 +71,8 @@ local COLORS = {
 	BgDark = Color3.fromRGB(12, 14, 20),
 	BgPanel = Color3.fromRGB(19, 23, 33),
 	BgElement = Color3.fromRGB(27, 32, 45),
-	Lime = Color3.fromRGB(163, 255, 18),      -- Неоновый лаймовый
-	Red = Color3.fromRGB(255, 42, 72),        -- Неоновый красный
+	Lime = Color3.fromRGB(163, 255, 18),
+	Red = Color3.fromRGB(255, 42, 72),
 	Cyan = Color3.fromRGB(0, 240, 255),
 	Purple = Color3.fromRGB(175, 90, 255),
 	TextMain = Color3.fromRGB(245, 248, 255),
@@ -86,11 +86,12 @@ local function getAccentColor(): Color3
 	return (STATE.DashedColorMode == "LIME") and COLORS.Lime or COLORS.Red
 end
 
--- Состояние захвата цели
+-- Состояние захвата цели и кэш Noclip
 local isLocking = false
 local currentTarget: Model? = nil
+local noclipCachedParts: { [BasePart]: boolean } = {}
 
--- Единая структура данных оверлея (используется и для Игроков, и для Ботов)
+-- Единая структура данных оверлея
 type EntityOverlay = {
 	key: Instance,
 	displayName: string,
@@ -126,7 +127,7 @@ local playerConnections: { [Player]: RBXScriptConnection } = {}
 local uiRefreshCallbacks: { () -> () } = {}
 
 -- ============================================================================
--- 3. ГЕНЕРАТОР ПРЕРЫВИСТЫХ ЛИНИЙ (DASHED UI GRADIENT & BEAM)
+-- 3. ГЕНЕРАТОР ПРЕРЫВИСТЫХ ЛИНИЙ И АНИМАЦИЙ
 -- ============================================================================
 local function quickTween(inst: Instance, duration: number, props: { [string]: any }, style: Enum.EasingStyle?)
 	local info = TweenInfo.new(duration, style or Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
@@ -135,7 +136,6 @@ local function quickTween(inst: Instance, duration: number, props: { [string]: a
 	return tw
 end
 
--- Создаёт последовательность прозрачности с чередованием видимых штрихов и пробелов (<= 20 точек)
 local function buildDashedSequence(dashes: number): NumberSequence
 	local count = math.clamp(dashes, 2, 4)
 	local keypoints: { NumberSequenceKeypoint } = {}
@@ -181,6 +181,17 @@ local function getHealthColor(percent: number): Color3
 	else
 		return COLORS.HpLow
 	end
+end
+
+-- Управление включением/выключением Noclip с восстановлением коллизий
+local function disableNoclip()
+	STATE.NoclipEnabled = false
+	for part, wasCollidable in pairs(noclipCachedParts) do
+		if part and part.Parent then
+			part.CanCollide = wasCollidable
+		end
+	end
+	table.clear(noclipCachedParts)
 end
 
 -- ============================================================================
@@ -251,7 +262,6 @@ local function syncEntityOverlay(data: EntityOverlay)
 	local accentColor = getAccentColor()
 	data.isLowHp = ratio <= 0.30
 
-	-- Вспышка частиц и анимация призрачной полоски при получении урона
 	if currentHp < data.lastHealth then
 		if data.isVisible then
 			if data.isBot and STATE.BotParticles then
@@ -356,7 +366,6 @@ local function createEntityOverlay(character: Model, displayName: string, isBot:
 	cardCorner.CornerRadius = UDim.new(0, 8)
 	cardCorner.Parent = card
 
-	-- Прерывистая красная/лаймовая линия вокруг карточки игрока
 	local boxStroke = attachDashedStroke(card, 1.8, isBot and COLORS.Purple or accentColor)
 
 	local nameLabel = Instance.new("TextLabel")
@@ -382,7 +391,6 @@ local function createEntityOverlay(character: Model, displayName: string, isBot:
 	distLabel.TextSize = 10
 	distLabel.Parent = card
 
-	-- Полоска HP
 	local barBg = Instance.new("Frame")
 	barBg.Size = UDim2.new(0.88, 0, 0.18, 0)
 	barBg.Position = UDim2.new(0.06, 0, 0.46, 0)
@@ -653,7 +661,7 @@ local fovCorner = Instance.new("UICorner")
 fovCorner.CornerRadius = UDim.new(1, 0)
 fovCorner.Parent = fovCircle
 
-local fovStroke, fovGrad = attachDashedStroke(fovCircle, 1.8, getAccentColor())
+local fovStroke, _ = attachDashedStroke(fovCircle, 1.8, getAccentColor())
 fovStroke.Transparency = 0.35
 
 -- Плавающая кнопка-пилюля с прерывистой рамкой
@@ -675,7 +683,7 @@ pillCorner.Parent = openPill
 
 local pillStroke, pillGrad = attachDashedStroke(openPill, 2.2, getAccentColor())
 
--- Главное окно меню с прерывистой красной/лаймовой линией
+-- Главное окно меню
 local mainFrame = Instance.new("Frame")
 mainFrame.Size = UDim2.fromOffset(420, 345)
 mainFrame.Position = UDim2.new(0.5, -210, 0.5, -172)
@@ -709,14 +717,13 @@ local titleLabel = Instance.new("TextLabel")
 titleLabel.Size = UDim2.new(1, -145, 1, 0)
 titleLabel.Position = UDim2.fromOffset(14, 0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = "⚡ NEON SUITE // v3.0"
+titleLabel.Text = "⚡ NEON SUITE // v3.1"
 titleLabel.TextColor3 = COLORS.TextMain
 titleLabel.Font = Enum.Font.GothamBlack
 titleLabel.TextSize = 13
 titleLabel.TextXAlignment = Enum.TextXAlignment.Left
 titleLabel.Parent = header
 
--- Быстрая кнопка переключения цвета пунктира (LIME / RED) прямо в шапке
 local themeSwitchBtn = Instance.new("TextButton")
 themeSwitchBtn.Size = UDim2.fromOffset(86, 26)
 themeSwitchBtn.Position = UDim2.new(1, -126, 0.5, -13)
@@ -843,7 +850,6 @@ for i, name in ipairs(tabNames) do
 	end)
 end
 
--- Обновление цвета пунктира (Lime <-> Red) во всём интерфейсе и у игроков
 local function applyDashedTheme()
 	local accent = getAccentColor()
 	themeSwitchBtn.Text = (STATE.DashedColorMode == "LIME") and "🟢 LIME" or "🔴 RED"
@@ -1120,7 +1126,7 @@ addSlider(lockPage, "Плавность доводки камеры", 0.05, 0.85
 	STATE.LockSmoothness = v
 end)
 
--- Вкладка 2: PLAYERS (Игроки + прерывистые линии + частицы)
+-- Вкладка 2: PLAYERS
 local playersPage = pages[2]
 addToggle(playersPage, "Оверлей и пунктирная рамка игроков", function() return STATE.PlayerOverlayEnabled end, function(v)
 	STATE.PlayerOverlayEnabled = v
@@ -1148,7 +1154,7 @@ addActionButton(playersPage, "Переключить цвет линии: LIME /
 	applyDashedTheme()
 end)
 
--- Вкладка 3: BOT ESP (Боты / NPC)
+-- Вкладка 3: BOT ESP
 local botsPage = pages[3]
 addToggle(botsPage, "Включить ESP для ботов (NPC)", function() return STATE.BotEspEnabled end, function(v)
 	STATE.BotEspEnabled = v
@@ -1175,8 +1181,23 @@ addActionButton(botsPage, "🔄 Пересканировать ботов на �
 	scanWorkspaceBots()
 end)
 
--- Вкладка 4: PHYSICS LAB
+-- Вкладка 4: PHYSICS LAB (включая Noclip)
 local physPage = pages[4]
+addToggle(physPage, "Noclip (проход сквозь стены)", function() return STATE.NoclipEnabled end, function(v)
+	if v then
+		STATE.NoclipEnabled = true
+	else
+		disableNoclip()
+	end
+end)
+addToggle(physPage, "Free-Fly (полёт по камере)", function() return STATE.FlyEnabled end, function(v)
+	STATE.FlyEnabled = v
+	local hum = localPlayer.Character and localPlayer.Character:FindFirstChildOfClass("Humanoid")
+	if hum then hum.PlatformStand = v end
+end)
+addToggle(physPage, "Air-Jump (прыжки в воздухе)", function() return STATE.InfiniteJump end, function(v)
+	STATE.InfiniteJump = v
+end)
 addSlider(physPage, "Скорость бега (WalkSpeed)", 16, 130, 0, function() return STATE.CustomWalkSpeed end, function(v)
 	STATE.CustomWalkSpeed = v
 	local hum = localPlayer.Character and localPlayer.Character:FindFirstChildOfClass("Humanoid")
@@ -1189,14 +1210,6 @@ addSlider(physPage, "Сила прыжка (JumpPower)", 50, 220, 0, function() 
 		hum.UseJumpPower = true
 		hum.JumpPower = v
 	end
-end)
-addToggle(physPage, "Air-Jump (прыжки в воздухе)", function() return STATE.InfiniteJump end, function(v)
-	STATE.InfiniteJump = v
-end)
-addToggle(physPage, "Free-Fly (полёт по камере)", function() return STATE.FlyEnabled end, function(v)
-	STATE.FlyEnabled = v
-	local hum = localPlayer.Character and localPlayer.Character:FindFirstChildOfClass("Humanoid")
-	if hum then hum.PlatformStand = v end
 end)
 addActionButton(physPage, "⚡ Телепорт к ближайшей цели", function()
 	local target = currentTarget or findClosestTarget()
@@ -1267,7 +1280,7 @@ closeBtn.MouseButton1Click:Connect(function()
 end)
 
 -- ============================================================================
--- 10. ЦИКЛЫ ОБНОВЛЕНИЯ КАМЕРЫ, ОВЕРЛЕЕВ И ФИЗИКИ
+-- 10. ЦИКЛЫ ОБНОВЛЕНИЯ КАМЕРЫ, ОВЕРЛЕЕВ И ФИЗИКИ (ВКЛЮЧАЯ NOCLIP)
 -- ============================================================================
 local function onCameraStep(dt: number)
 	local activeCam = camera
@@ -1298,6 +1311,20 @@ local function onCameraStep(dt: number)
 	local goalCFrame = CFrame.lookAt(camPos, targetPart.Position)
 	local alpha = 1 - math.exp(-STATE.LockSmoothness * 60 * dt)
 	activeCam.CFrame = activeCam.CFrame:Lerp(goalCFrame, alpha)
+end
+
+-- Физический шаг Stepped: отключаем коллизии персонажа до расчёта физики
+local function onPhysicsStep()
+	if not STATE.NoclipEnabled then return end
+	local char = localPlayer.Character
+	if not char then return end
+
+	for _, part in ipairs(char:GetDescendants()) do
+		if part:IsA("BasePart") and part.CanCollide then
+			noclipCachedParts[part] = true
+			part.CanCollide = false
+		end
+	end
 end
 
 local elapsedTime = 0
@@ -1336,7 +1363,6 @@ end
 local function onRenderStepped(dt: number)
 	elapsedTime += dt
 
-	-- Бегущий пунктир по рамке меню и кнопке
 	local dashRot = (elapsedTime * 55) % 360
 	pillGrad.Rotation = dashRot
 	if mainFrame.Visible then
@@ -1412,6 +1438,7 @@ UserInputService.JumpRequest:Connect(function()
 end)
 
 localPlayer.CharacterAdded:Connect(function(char)
+	table.clear(noclipCachedParts)
 	local hum = char:WaitForChild("Humanoid", 5) :: Humanoid?
 	if hum then
 		hum.WalkSpeed = STATE.CustomWalkSpeed
@@ -1450,4 +1477,5 @@ Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
 end)
 
 RunService:BindToRenderStep("NeonLockOnV3", Enum.RenderPriority.Camera.Value + 1, onCameraStep)
+RunService.Stepped:Connect(onPhysicsStep)
 RunService.RenderStepped:Connect(onRenderStepped)
