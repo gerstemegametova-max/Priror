@@ -1,46 +1,15 @@
 --!strict
 --[[
-    Универсальный отладочный и тренировочный инструментарий для Roblox Studio
-    Включает:
-    1. Систему захвата цели (Lock-On) с плавной доводкой камеры поверх стандартного контроллера.
-    2. Оптимизированный визуальный оверлей (Debug Overlay) с индикатором здоровья,
-       мягким свечением, пульсацией при низком HP и лёгкими частицами.
+    NEON DEV & TRAINING SUITE v2.0 (Universal LocalScript)
+    Универсальный инструментарий для тестирования механик и полигонов:
+    1. Neon Animated UI (поддержка мыши и сенсорного экрана).
+    2. Lock-On System + визуальный FOV-круг + неоновый луч до цели.
+    3. Debug Overlay + Damage Ghost Bar + Highlight Chams + Neon Sparks.
+    4. Physics Lab: WalkSpeed, JumpPower, Air-Jump, Free-Fly, Target TP.
 ]]
 
 -- ============================================================================
--- 1. БЛОК НАСТРОЕК (КОНФИГУРАЦИЯ)
--- ============================================================================
-local CONFIG = {
-	-- Настройки Lock-On (Захват цели)
-	LOCK_ENABLED = true,
-	LOCK_KEY = Enum.UserInputType.MouseButton2, -- Правая кнопка мыши
-	LOCK_ALT_KEY = Enum.KeyCode.E,              -- Дополнительная клавиша для тестов
-	LOCK_RADIUS_PX = 250,                       -- Радиус поиска цели от центра экрана (px)
-	LOCK_SMOOTHNESS = 0.18,                     -- Плавность поворота (0.05 — плавно, 0.5 — резко)
-	LOCK_MAX_DISTANCE = 350,                    -- Максимальная дистанция захвата (studs)
-	LOCK_TARGET_PART = "HumanoidRootPart",      -- Целевая часть тела персонажа
-
-	-- Настройки Debug Overlay (Оверлей над головой)
-	OVERLAY_ENABLED = true,
-	OVERLAY_MAX_DISTANCE = 350,                 -- Дистанция скрытия оверлея (studs)
-	OVERLAY_OFFSET = Vector3.new(0, 3.2, 0),    -- Смещение над головой персонажа
-	OVERLAY_SIZE = UDim2.fromOffset(170, 46),   -- Размер интерфейса в пикселях
-	TWEEN_HP_TIME = 0.25,                       -- Скорость анимации изменения полоски HP
-	TWEEN_FADE_TIME = 0.35,                     -- Скорость плавного появления оверлея
-
-	-- Цветовая палитра здоровья
-	COLOR_HIGH = Color3.fromRGB(72, 235, 130),  -- > 65% HP (Зелёный)
-	COLOR_MID = Color3.fromRGB(255, 208, 64),   -- > 30% HP (Жёлтый)
-	COLOR_LOW = Color3.fromRGB(245, 70, 85),    -- <= 30% HP (Красный)
-
-	-- Настройки частиц и эффектов
-	PARTICLES_ENABLED = true,
-	PARTICLE_RATE = 4,                          -- Частота спавна частиц (3-5 для слабых устройств)
-	PULSE_SPEED = 7,                            -- Скорость пульсации свечения при низком HP
-}
-
--- ============================================================================
--- 2. СЕРВИСЫ И ПЕРЕМЕННЫЕ СОСТОЯНИЯ
+-- 1. СЕРВИСЫ И БАЗОВЫЕ ПЕРЕМЕННЫЕ
 -- ============================================================================
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -49,13 +18,68 @@ local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 
 local localPlayer = Players.LocalPlayer
+local playerGui = localPlayer:WaitForChild("PlayerGui")
 local camera: Camera? = Workspace.CurrentCamera
 
--- Состояние захвата цели
+-- ============================================================================
+-- 2. РЕАКТИВНАЯ КОНФИГУРАЦИЯ (УПРАВЛЯЕТСЯ ИЗ МЕНЮ В РЕАЛЬНОМ ВРЕМЕНИ)
+-- ============================================================================
+local STATE = {
+	-- Меню
+	MenuOpen = false,
+	MenuKey = Enum.KeyCode.RightShift,
+	AltMenuKey = Enum.KeyCode.K,
+
+	-- Модуль 1: Lock-On
+	LockEnabled = true,
+	LockToggleMode = false, -- false = зажатие, true = вкл/выкл по нажатию
+	LockKey = Enum.UserInputType.MouseButton2,
+	LockAltKey = Enum.KeyCode.E,
+	LockRadiusPx = 220,
+	LockSmoothness = 0.22,
+	LockMaxDistance = 350,
+	LockTargetPart = "HumanoidRootPart", -- "HumanoidRootPart" или "Head"
+	ShowFovCircle = true,
+	ShowTargetBeam = true,
+
+	-- Модуль 2: Debug Overlay & Visuals
+	OverlayEnabled = true,
+	OverlayMaxDistance = 350,
+	ShowHighlight = true, -- Неоновая обводка персонажа (Chams)
+	ParticlesEnabled = true,
+	ParticleRate = 8,
+
+	-- Модуль 3: Physics & Movement Lab
+	CustomWalkSpeed = 16,
+	CustomJumpPower = 50,
+	InfiniteJump = false,
+	FlyEnabled = false,
+	FlySpeed = 65,
+}
+
+-- Неоновая палитра интерфейса
+local THEME = {
+	BgDark = Color3.fromRGB(13, 15, 22),
+	BgPanel = Color3.fromRGB(20, 24, 34),
+	BgElement = Color3.fromRGB(28, 33, 46),
+	NeonCyan = Color3.fromRGB(0, 245, 212),
+	NeonPurple = Color3.fromRGB(168, 85, 247),
+	NeonPink = Color3.fromRGB(255, 56, 130),
+	TextMain = Color3.fromRGB(245, 248, 255),
+	TextDim = Color3.fromRGB(145, 156, 180),
+	HpHigh = Color3.fromRGB(52, 245, 152),
+	HpMid = Color3.fromRGB(255, 204, 51),
+	HpLow = Color3.fromRGB(255, 65, 95),
+}
+
+-- Состояние модулей
 local isLocking = false
 local currentTarget: Model? = nil
+local targetBeam: Beam? = nil
+local beamAtt0: Attachment? = nil
+local beamAtt1: Attachment? = nil
 
--- Реестр активных оверлеев и подключений игроков
+-- Реестр оверлеев
 type OverlayData = {
 	player: Player,
 	character: Model,
@@ -64,11 +88,15 @@ type OverlayData = {
 	head: BasePart,
 	billboard: BillboardGui,
 	hpFill: Frame,
+	hpGhost: Frame,
+	distLabel: TextLabel,
 	glowStroke: UIStroke,
 	glowImage: ImageLabel,
-	attachment: Attachment?,
-	emitter: ParticleEmitter?,
+	highlight: Highlight,
+	attachment: Attachment,
+	emitter: ParticleEmitter,
 	connections: { RBXScriptConnection },
+	lastHealth: number,
 	isLowHp: boolean,
 	isVisible: boolean,
 	fadeReady: boolean,
@@ -76,57 +104,77 @@ type OverlayData = {
 
 local activeOverlays: { [Player]: OverlayData } = {}
 local playerConnections: { [Player]: RBXScriptConnection } = {}
+local uiRefreshCallbacks: { () -> () } = {}
 
 -- ============================================================================
--- 3. МОДУЛЬ DEBUG OVERLAY (СОЗДАНИЕ, ОБНОВЛЕНИЕ, ОЧИСТКА)
+-- 3. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ АНИМАЦИИ И МАТЕМАТИКИ
 -- ============================================================================
+local function quickTween(inst: Instance, duration: number, props: { [string]: any }, style: Enum.EasingStyle?)
+	local info = TweenInfo.new(duration, style or Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+	local tw = TweenService:Create(inst, info, props)
+	tw:Play()
+	return tw
+end
 
--- Возвращает цвет в зависимости от процента здоровья
 local function getHealthColor(percent: number): Color3
 	if percent > 0.65 then
-		return CONFIG.COLOR_HIGH
+		return THEME.HpHigh
 	elseif percent > 0.30 then
-		return CONFIG.COLOR_MID
+		return THEME.HpMid
 	else
-		return CONFIG.COLOR_LOW
+		return THEME.HpLow
 	end
 end
 
--- Плавная синхронизация полоски здоровья и цветов при получении урона/лечении
+-- ============================================================================
+-- 4. МОДУЛЬ VISUAL OVERLAY (BILLBOARD + GHOST BAR + HIGHLIGHT + PARTICLES)
+-- ============================================================================
 local function syncOverlay(data: OverlayData)
 	local hum = data.humanoid
 	if not hum or hum.MaxHealth <= 0 then return end
 
-	local ratio = math.clamp(hum.Health / hum.MaxHealth, 0, 1)
+	local currentHp = hum.Health
+	local ratio = math.clamp(currentHp / hum.MaxHealth, 0, 1)
 	local targetColor = getHealthColor(ratio)
 	data.isLowHp = ratio <= 0.30
 
-	-- Если HP восстановилось выше 30%, возвращаем базовую прозрачность свечения
+	-- Если персонаж получил урон — запускаем вспышку частиц и задержку призрачной полоски
+	if currentHp < data.lastHealth then
+		if STATE.ParticlesEnabled and data.isVisible then
+			data.emitter:Emit(8)
+		end
+		task.delay(0.22, function()
+			if activeOverlays[data.player] == data then
+				quickTween(data.hpGhost, 0.35, { Size = UDim2.fromScale(ratio, 1) }, Enum.EasingStyle.Quad)
+			end
+		end)
+	else
+		data.hpGhost.Size = UDim2.fromScale(ratio, 1)
+	end
+	data.lastHealth = currentHp
+
 	if not data.isLowHp and data.fadeReady then
-		data.glowStroke.Transparency = 0.25
-		data.glowImage.ImageTransparency = 0.45
+		data.glowStroke.Transparency = 0.2
+		data.glowImage.ImageTransparency = 0.4
 	end
 
-	local tweenInfo = TweenInfo.new(CONFIG.TWEEN_HP_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-	TweenService:Create(data.hpFill, tweenInfo, {
+	quickTween(data.hpFill, 0.22, {
 		Size = UDim2.fromScale(ratio, 1),
 		BackgroundColor3 = targetColor,
-	}):Play()
+	}, Enum.EasingStyle.Quad)
 
-	TweenService:Create(data.glowStroke, tweenInfo, {
-		Color = targetColor,
-	}):Play()
+	quickTween(data.glowStroke, 0.22, { Color = targetColor }, Enum.EasingStyle.Quad)
+	quickTween(data.glowImage, 0.22, { ImageColor3 = targetColor }, Enum.EasingStyle.Quad)
 
-	TweenService:Create(data.glowImage, tweenInfo, {
-		ImageColor3 = targetColor,
-	}):Play()
-
-	if data.emitter then
-		data.emitter.Color = ColorSequence.new(targetColor, Color3.new(1, 1, 1))
-	end
+	data.highlight.OutlineColor = targetColor
+	data.highlight.FillColor = targetColor
+	data.emitter.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, targetColor),
+		ColorSequenceKeypoint.new(0.6, THEME.NeonCyan),
+		ColorSequenceKeypoint.new(1, Color3.new(1, 1, 1)),
+	})
 end
 
--- Полная очистка UI, частиц и подключений без утечек памяти
 local function removeOverlay(player: Player)
 	local data = activeOverlays[player]
 	if not data then return end
@@ -138,70 +186,71 @@ local function removeOverlay(player: Player)
 	end
 	table.clear(data.connections)
 
-	if data.billboard and data.billboard.Parent then
-		data.billboard:Destroy()
-	end
-
-	if data.attachment and data.attachment.Parent then
-		data.attachment:Destroy()
-	end
+	if data.billboard and data.billboard.Parent then data.billboard:Destroy() end
+	if data.highlight and data.highlight.Parent then data.highlight:Destroy() end
+	if data.attachment and data.attachment.Parent then data.attachment:Destroy() end
 
 	activeOverlays[player] = nil
 end
 
--- Создание BillboardGui и системы частиц для персонажа
 local function createOverlay(player: Player, character: Model)
-	if not CONFIG.OVERLAY_ENABLED or player == localPlayer then return end
-
+	if player == localPlayer then return end
 	removeOverlay(player)
 
 	local humanoid = character:WaitForChild("Humanoid", 5) :: Humanoid?
 	local head = character:WaitForChild("Head", 5) :: BasePart?
 	local rootPart = character:WaitForChild("HumanoidRootPart", 5) :: BasePart?
 
-	-- Защита от гонки потоков, если персонаж успел пересоздаться во время ожидания
 	if player.Character ~= character then return end
-	if not humanoid or not head or not rootPart or humanoid.Health <= 0 then
-		return
-	end
+	if not humanoid or not head or not rootPart or humanoid.Health <= 0 then return end
 
-	-- 1. Основной контейнер BillboardGui
+	-- 1. BillboardGui над головой
 	local billboard = Instance.new("BillboardGui")
-	billboard.Name = "DebugInfoOverlay"
+	billboard.Name = "NeonDebugOverlay"
 	billboard.Adornee = head
-	billboard.Size = CONFIG.OVERLAY_SIZE
-	billboard.StudsOffset = CONFIG.OVERLAY_OFFSET
+	billboard.Size = UDim2.fromOffset(185, 54)
+	billboard.StudsOffset = Vector3.new(0, 3.3, 0)
 	billboard.AlwaysOnTop = true
 	billboard.LightInfluence = 0
-	billboard.MaxDistance = CONFIG.OVERLAY_MAX_DISTANCE
+	billboard.MaxDistance = STATE.OverlayMaxDistance
+	billboard.Enabled = STATE.OverlayEnabled
 	billboard.ResetOnSpawn = false
 
 	local container = Instance.new("Frame")
-	container.Name = "Container"
 	container.Size = UDim2.fromScale(1, 1)
 	container.BackgroundTransparency = 1
 	container.Parent = billboard
 
-	-- Имя игрока (старт с прозрачностью 1 для плавного появления)
+	-- Имя + дистанция
 	local nameLabel = Instance.new("TextLabel")
-	nameLabel.Name = "PlayerName"
-	nameLabel.Size = UDim2.new(1, 0, 0.45, 0)
+	nameLabel.Size = UDim2.new(1, 0, 0.42, 0)
 	nameLabel.BackgroundTransparency = 1
 	nameLabel.Text = player.DisplayName
-	nameLabel.TextColor3 = Color3.fromRGB(245, 247, 250)
+	nameLabel.TextColor3 = THEME.TextMain
 	nameLabel.TextTransparency = 1
 	nameLabel.TextStrokeTransparency = 1
-	nameLabel.TextStrokeColor3 = Color3.fromRGB(15, 18, 24)
+	nameLabel.TextStrokeColor3 = Color3.fromRGB(10, 12, 18)
 	nameLabel.Font = Enum.Font.GothamBold
 	nameLabel.TextSize = 13
 	nameLabel.Parent = container
 
-	-- Подложка полоски здоровья
+	local distLabel = Instance.new("TextLabel")
+	distLabel.Size = UDim2.new(1, 0, 0.3, 0)
+	distLabel.Position = UDim2.fromScale(0, 0.72)
+	distLabel.BackgroundTransparency = 1
+	distLabel.Text = "0m • 100 HP"
+	distLabel.TextColor3 = THEME.NeonCyan
+	distLabel.TextTransparency = 1
+	distLabel.TextStrokeTransparency = 1
+	distLabel.Font = Enum.Font.GothamMedium
+	distLabel.TextSize = 10
+	distLabel.Parent = container
+
+	-- Подложка полоски HP
 	local barBg = Instance.new("Frame")
-	barBg.Name = "BarBackground"
-	barBg.Size = UDim2.new(0.86, 0, 0.22, 0)
-	barBg.Position = UDim2.new(0.07, 0, 0.54, 0)
-	barBg.BackgroundColor3 = Color3.fromRGB(22, 25, 33)
+	barBg.Size = UDim2.new(0.86, 0, 0.2, 0)
+	barBg.Position = UDim2.new(0.07, 0, 0.46, 0)
+	barBg.BackgroundColor3 = Color3.fromRGB(16, 18, 26)
 	barBg.BackgroundTransparency = 1
 	barBg.BorderSizePixel = 0
 	barBg.Parent = container
@@ -210,31 +259,40 @@ local function createOverlay(player: Player, character: Model)
 	bgCorner.CornerRadius = UDim.new(1, 0)
 	bgCorner.Parent = barBg
 
-	-- Мягкая внешняя обводка (UIStroke)
 	local glowStroke = Instance.new("UIStroke")
 	glowStroke.Thickness = 1.6
 	glowStroke.Transparency = 1
-	glowStroke.Color = CONFIG.COLOR_HIGH
+	glowStroke.Color = THEME.HpHigh
 	glowStroke.Parent = barBg
 
-	-- Радиальное свечение за полоской (без обрезки границами CanvasGroup)
 	local glowImage = Instance.new("ImageLabel")
-	glowImage.Name = "SoftGlow"
-	glowImage.Size = UDim2.new(1.25, 0, 2.6, 0)
+	glowImage.Size = UDim2.new(1.3, 0, 2.8, 0)
 	glowImage.Position = UDim2.fromScale(0.5, 0.5)
 	glowImage.AnchorPoint = Vector2.new(0.5, 0.5)
 	glowImage.BackgroundTransparency = 1
 	glowImage.Image = "rbxassetid://5028857084"
-	glowImage.ImageColor3 = CONFIG.COLOR_HIGH
+	glowImage.ImageColor3 = THEME.HpHigh
 	glowImage.ImageTransparency = 1
 	glowImage.ZIndex = 0
 	glowImage.Parent = barBg
 
-	-- Заполнение полоски здоровья
+	-- Призрачная полоска урона (белая)
+	local hpGhost = Instance.new("Frame")
+	hpGhost.Size = UDim2.fromScale(1, 1)
+	hpGhost.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	hpGhost.BackgroundTransparency = 1
+	hpGhost.BorderSizePixel = 0
+	hpGhost.ZIndex = 1
+	hpGhost.Parent = barBg
+
+	local ghostCorner = Instance.new("UICorner")
+	ghostCorner.CornerRadius = UDim.new(1, 0)
+	ghostCorner.Parent = hpGhost
+
+	-- Основная полоска HP
 	local hpFill = Instance.new("Frame")
-	hpFill.Name = "HealthFill"
 	hpFill.Size = UDim2.fromScale(1, 1)
-	hpFill.BackgroundColor3 = CONFIG.COLOR_HIGH
+	hpFill.BackgroundColor3 = THEME.HpHigh
 	hpFill.BackgroundTransparency = 1
 	hpFill.BorderSizePixel = 0
 	hpFill.ZIndex = 2
@@ -244,48 +302,53 @@ local function createOverlay(player: Player, character: Model)
 	fillCorner.CornerRadius = UDim.new(1, 0)
 	fillCorner.Parent = hpFill
 
-	local fillGradient = Instance.new("UIGradient")
-	fillGradient.Rotation = 90
-	fillGradient.Color = ColorSequence.new({
-		ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 255, 255)),
-		ColorSequenceKeypoint.new(1, Color3.fromRGB(195, 195, 195)),
-	})
-	fillGradient.Parent = hpFill
-
 	billboard.Parent = head
 
-	-- 2. Лёгкие частицы над головой (Attachment + ParticleEmitter)
-	local attachment: Attachment? = nil
-	local emitter: ParticleEmitter? = nil
+	-- 2. Неоновая обводка персонажа (Highlight Chams)
+	local highlight = Instance.new("Highlight")
+	highlight.Name = "NeonCharHighlight"
+	highlight.Adornee = character
+	highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+	highlight.FillColor = THEME.HpHigh
+	highlight.FillTransparency = 0.82
+	highlight.OutlineColor = THEME.HpHigh
+	highlight.OutlineTransparency = 0.15
+	highlight.Enabled = STATE.ShowHighlight
+	highlight.Parent = character
 
-	if CONFIG.PARTICLES_ENABLED then
-		attachment = Instance.new("Attachment")
-		attachment.Name = "DebugParticleAnchor"
-		attachment.Position = Vector3.new(0, 1.2, 0)
-		attachment.Parent = head
+	-- 3. Исправленные неоновые частицы над головой (100% видимые в любом плейсе)
+	local attachment = Instance.new("Attachment")
+	attachment.Name = "NeonParticleAnchor"
+	attachment.Position = Vector3.new(0, 1.35, 0)
+	attachment.Parent = head
 
-		emitter = Instance.new("ParticleEmitter")
-		emitter.Name = "DebugSparks"
-		emitter.Texture = "rbxassetid://243660364"
-		emitter.Rate = CONFIG.PARTICLE_RATE
-		emitter.Lifetime = NumberRange.new(1.0, 1.6)
-		emitter.Speed = NumberRange.new(1.2, 2.2)
-		emitter.SpreadAngle = Vector2.new(35, 35)
-		emitter.Acceleration = Vector3.new(0, 1.5, 0)
-		emitter.Size = NumberSequence.new({
-			NumberSequenceKeypoint.new(0, 0.18),
-			NumberSequenceKeypoint.new(0.7, 0.12),
-			NumberSequenceKeypoint.new(1, 0),
-		})
-		emitter.Transparency = NumberSequence.new({
-			NumberSequenceKeypoint.new(0, 0.3),
-			NumberSequenceKeypoint.new(1, 1),
-		})
-		emitter.LightEmission = 0.8
-		emitter.Parent = attachment
-	end
+	local emitter = Instance.new("ParticleEmitter")
+	emitter.Name = "NeonSparks"
+	emitter.Texture = "rbxasset://textures/particles/sparkles_main.dds" -- Встроенная текстура движка
+	emitter.Rate = STATE.ParticleRate
+	emitter.Enabled = STATE.ParticlesEnabled
+	emitter.Lifetime = NumberRange.new(1.1, 1.8)
+	emitter.Speed = NumberRange.new(1.8, 3.2)
+	emitter.EmissionDirection = Enum.NormalId.Top
+	emitter.SpreadAngle = Vector2.new(45, 45)
+	emitter.Acceleration = Vector3.new(0, 2.2, 0)
+	emitter.Drag = 1.5
+	emitter.RotSpeed = NumberRange.new(-120, 120)
+	emitter.Size = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.45),
+		NumberSequenceKeypoint.new(0.65, 0.28),
+		NumberSequenceKeypoint.new(1, 0),
+	})
+	emitter.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.1),
+		NumberSequenceKeypoint.new(0.8, 0.4),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	emitter.LightEmission = 1
+	emitter.LightInfluence = 0
+	emitter.ZOffset = 0.5
+	emitter.Parent = attachment
 
-	-- 3. Сохраняем структуру и подписываемся на события
 	local data: OverlayData = {
 		player = player,
 		character = character,
@@ -294,11 +357,15 @@ local function createOverlay(player: Player, character: Model)
 		head = head,
 		billboard = billboard,
 		hpFill = hpFill,
+		hpGhost = hpGhost,
+		distLabel = distLabel,
 		glowStroke = glowStroke,
 		glowImage = glowImage,
+		highlight = highlight,
 		attachment = attachment,
 		emitter = emitter,
 		connections = {},
+		lastHealth = humanoid.Health,
 		isLowHp = false,
 		isVisible = true,
 		fadeReady = false,
@@ -321,15 +388,16 @@ local function createOverlay(player: Player, character: Model)
 	activeOverlays[player] = data
 	syncOverlay(data)
 
-	-- Плавное появление элементов (Fade-In)
-	local fadeInfo = TweenInfo.new(CONFIG.TWEEN_FADE_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-	TweenService:Create(nameLabel, fadeInfo, { TextTransparency = 0, TextStrokeTransparency = 0.35 }):Play()
-	TweenService:Create(barBg, fadeInfo, { BackgroundTransparency = 0.15 }):Play()
-	TweenService:Create(hpFill, fadeInfo, { BackgroundTransparency = 0 }):Play()
-	TweenService:Create(glowStroke, fadeInfo, { Transparency = 0.25 }):Play()
-	TweenService:Create(glowImage, fadeInfo, { ImageTransparency = 0.45 }):Play()
+	-- Плавное появление Fade-In
+	quickTween(nameLabel, 0.35, { TextTransparency = 0, TextStrokeTransparency = 0.35 }, Enum.EasingStyle.Quad)
+	quickTween(distLabel, 0.35, { TextTransparency = 0.1, TextStrokeTransparency = 0.5 }, Enum.EasingStyle.Quad)
+	quickTween(barBg, 0.35, { BackgroundTransparency = 0.15 }, Enum.EasingStyle.Quad)
+	quickTween(hpGhost, 0.35, { BackgroundTransparency = 0.35 }, Enum.EasingStyle.Quad)
+	quickTween(hpFill, 0.35, { BackgroundTransparency = 0 }, Enum.EasingStyle.Quad)
+	quickTween(glowStroke, 0.35, { Transparency = 0.2 }, Enum.EasingStyle.Quad)
+	quickTween(glowImage, 0.35, { ImageTransparency = 0.4 }, Enum.EasingStyle.Quad)
 
-	task.delay(CONFIG.TWEEN_FADE_TIME, function()
+	task.delay(0.35, function()
 		if activeOverlays[player] == data then
 			data.fadeReady = true
 		end
@@ -337,24 +405,65 @@ local function createOverlay(player: Player, character: Model)
 end
 
 -- ============================================================================
--- 4. МОДУЛЬ LOCK-ON (ПОИСК ЦЕЛИ И ДОВОДКА КАМЕРЫ)
+-- 5. МОДУЛЬ LOCK-ON + НЕОНОВЫЙ ЛУЧ (BEAM)
 -- ============================================================================
+local function clearTargetBeam()
+	if targetBeam then targetBeam:Destroy(); targetBeam = nil end
+	if beamAtt0 then beamAtt0:Destroy(); beamAtt0 = nil end
+	if beamAtt1 then beamAtt1:Destroy(); beamAtt1 = nil end
+end
 
--- Проверяет, жив ли персонаж и валидна ли его целевая часть
+local function updateTargetBeam(targetPart: BasePart?)
+	if not STATE.ShowTargetBeam or not isLocking or not targetPart then
+		clearTargetBeam()
+		return
+	end
+
+	local myChar = localPlayer.Character
+	local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart") :: BasePart?
+	if not myRoot then
+		clearTargetBeam()
+		return
+	end
+
+	if not targetBeam or not beamAtt0 or not beamAtt1 or beamAtt1.Parent ~= targetPart or beamAtt0.Parent ~= myRoot then
+		clearTargetBeam()
+		beamAtt0 = Instance.new("Attachment")
+		beamAtt0.Parent = myRoot
+
+		beamAtt1 = Instance.new("Attachment")
+		beamAtt1.Parent = targetPart
+
+		local beam = Instance.new("Beam")
+		beam.Name = "NeonLockBeam"
+		beam.Attachment0 = beamAtt0
+		beam.Attachment1 = beamAtt1
+		beam.Width0 = 0.16
+		beam.Width1 = 0.08
+		beam.FaceCamera = true
+		beam.LightEmission = 1
+		beam.LightInfluence = 0
+		beam.Color = ColorSequence.new(THEME.NeonCyan, THEME.NeonPink)
+		beam.Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0.6),
+			NumberSequenceKeypoint.new(0.5, 0.15),
+			NumberSequenceKeypoint.new(1, 0.1),
+		})
+		beam.Parent = myRoot
+		targetBeam = beam
+	end
+end
+
 local function isValidTarget(character: Model?): (boolean, BasePart?)
 	if not character or not character.Parent then return false, nil end
-
 	local hum = character:FindFirstChildOfClass("Humanoid")
-	local targetPart = character:FindFirstChild(CONFIG.LOCK_TARGET_PART) :: BasePart?
-
+	local targetPart = (character:FindFirstChild(STATE.LockTargetPart) or character:FindFirstChild("HumanoidRootPart")) :: BasePart?
 	if not hum or hum.Health <= 0 or not targetPart then
 		return false, nil
 	end
-
 	return true, targetPart
 end
 
--- Ищет ближайшего живого персонажа в радиусе N пикселей от центра экрана
 local function findClosestTarget(): Model?
 	local activeCam = camera
 	if not activeCam then return nil end
@@ -363,7 +472,7 @@ local function findClosestTarget(): Model?
 	local screenCenter = Vector2.new(viewportSize.X * 0.5, viewportSize.Y * 0.5)
 
 	local bestTarget: Model? = nil
-	local shortestScreenDist = CONFIG.LOCK_RADIUS_PX
+	local shortestScreenDist = STATE.LockRadiusPx
 	local camPos = activeCam.CFrame.Position
 
 	for _, player in ipairs(Players:GetPlayers()) do
@@ -371,7 +480,7 @@ local function findClosestTarget(): Model?
 			local valid, targetPart = isValidTarget(player.Character)
 			if valid and targetPart then
 				local worldDist = (targetPart.Position - camPos).Magnitude
-				if worldDist <= CONFIG.LOCK_MAX_DISTANCE then
+				if worldDist <= STATE.LockMaxDistance then
 					local screenPos, onScreen = activeCam:WorldToViewportPoint(targetPart.Position)
 					if onScreen and screenPos.Z > 0 then
 						local distFromCenter = (Vector2.new(screenPos.X, screenPos.Y) - screenCenter).Magnitude
@@ -388,85 +497,752 @@ local function findClosestTarget(): Model?
 	return bestTarget
 end
 
--- Обновление камеры (строго после стандартного контроллера камеры)
-local function onCameraStep(dt: number)
-	if not CONFIG.LOCK_ENABLED or not isLocking then return end
+-- ============================================================================
+-- 6. ПОСТРОЕНИЕ АНИМИРОВАННОГО НЕОНОВОГО ИНТЕРФЕЙСА (GUI + FOV CIRCLE)
+-- ============================================================================
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "NeonDevSuiteGUI"
+screenGui.ResetOnSpawn = false
+screenGui.IgnoreGuiInset = true
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.Parent = playerGui
 
+-- Визуальный неоновый круг FOV на экране
+local fovCircle = Instance.new("Frame")
+fovCircle.Name = "NeonFovCircle"
+fovCircle.AnchorPoint = Vector2.new(0.5, 0.5)
+fovCircle.Position = UDim2.fromScale(0.5, 0.5)
+fovCircle.Size = UDim2.fromOffset(STATE.LockRadiusPx * 2, STATE.LockRadiusPx * 2)
+fovCircle.BackgroundTransparency = 1
+fovCircle.Visible = STATE.LockEnabled and STATE.ShowFovCircle
+fovCircle.Parent = screenGui
+
+local fovCorner = Instance.new("UICorner")
+fovCorner.CornerRadius = UDim.new(1, 0)
+fovCorner.Parent = fovCircle
+
+local fovStroke = Instance.new("UIStroke")
+fovStroke.Thickness = 1.5
+fovStroke.Color = THEME.NeonCyan
+fovStroke.Transparency = 0.45
+fovStroke.Parent = fovCircle
+
+-- Плавающая кнопка-пилюля открытия меню (удобно для телефона/планшета и ПК)
+local openPill = Instance.new("TextButton")
+openPill.Name = "NeonTogglePill"
+openPill.Size = UDim2.fromOffset(136, 36)
+openPill.Position = UDim2.new(0, 18, 0.5, -18)
+openPill.BackgroundColor3 = THEME.BgDark
+openPill.BackgroundTransparency = 0.12
+openPill.Text = "⚡ DEV SUITE"
+openPill.TextColor3 = THEME.NeonCyan
+openPill.Font = Enum.Font.GothamBold
+openPill.TextSize = 13
+openPill.AutoButtonColor = false
+openPill.Parent = screenGui
+
+local pillCorner = Instance.new("UICorner")
+pillCorner.CornerRadius = UDim.new(1, 0)
+pillCorner.Parent = openPill
+
+local pillStroke = Instance.new("UIStroke")
+pillStroke.Thickness = 1.8
+pillStroke.Color = THEME.NeonCyan
+pillStroke.Parent = openPill
+
+-- Главное окно меню
+local mainFrame = Instance.new("Frame")
+mainFrame.Name = "MainNeonWindow"
+mainFrame.Size = UDim2.fromOffset(390, 320)
+mainFrame.Position = UDim2.new(0.5, -195, 0.5, -160)
+mainFrame.BackgroundColor3 = THEME.BgDark
+mainFrame.BackgroundTransparency = 0.06
+mainFrame.Visible = false
+mainFrame.ClipsDescendants = true
+mainFrame.Parent = screenGui
+
+local mainCorner = Instance.new("UICorner")
+mainCorner.CornerRadius = UDim.new(0, 14)
+mainCorner.Parent = mainFrame
+
+local mainStroke = Instance.new("UIStroke")
+mainStroke.Thickness = 2.2
+mainStroke.Color = Color3.new(1, 1, 1)
+mainStroke.Parent = mainFrame
+
+-- Переливающийся неоновый градиент на рамке окна
+local borderGradient = Instance.new("UIGradient")
+borderGradient.Color = ColorSequence.new({
+	ColorSequenceKeypoint.new(0, THEME.NeonCyan),
+	ColorSequenceKeypoint.new(0.5, THEME.NeonPurple),
+	ColorSequenceKeypoint.new(1, THEME.NeonPink),
+})
+borderGradient.Parent = mainStroke
+
+local uiScale = Instance.new("UIScale")
+uiScale.Scale = 0.88
+uiScale.Parent = mainFrame
+
+-- Верхняя панель (Header + перетаскивание)
+local header = Instance.new("Frame")
+header.Name = "Header"
+header.Size = UDim2.new(1, 0, 0, 44)
+header.BackgroundColor3 = THEME.BgPanel
+header.BorderSizePixel = 0
+header.Parent = mainFrame
+
+local headerCorner = Instance.new("UICorner")
+headerCorner.CornerRadius = UDim.new(0, 14)
+headerCorner.Parent = header
+
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Size = UDim2.new(1, -60, 1, 0)
+titleLabel.Position = UDim2.fromOffset(16, 0)
+titleLabel.BackgroundTransparency = 1
+titleLabel.Text = "⚡ NEON TOOLKIT // v2.0"
+titleLabel.TextColor3 = THEME.TextMain
+titleLabel.Font = Enum.Font.GothamBlack
+titleLabel.TextSize = 14
+titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+titleLabel.Parent = header
+
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.fromOffset(28, 28)
+closeBtn.Position = UDim2.new(1, -36, 0.5, -14)
+closeBtn.BackgroundColor3 = THEME.BgElement
+closeBtn.Text = "✕"
+closeBtn.TextColor3 = THEME.NeonPink
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextSize = 14
+closeBtn.Parent = header
+
+local closeCorner = Instance.new("UICorner")
+closeCorner.CornerRadius = UDim.new(0, 8)
+closeCorner.Parent = closeBtn
+
+-- Панель вкладок (Tabs)
+local tabBar = Instance.new("Frame")
+tabBar.Size = UDim2.new(1, -24, 0, 34)
+tabBar.Position = UDim2.fromOffset(12, 52)
+tabBar.BackgroundColor3 = THEME.BgPanel
+tabBar.BorderSizePixel = 0
+tabBar.Parent = mainFrame
+
+local tabBarCorner = Instance.new("UICorner")
+tabBarCorner.CornerRadius = UDim.new(0, 9)
+tabBarCorner.Parent = tabBar
+
+local tabIndicator = Instance.new("Frame")
+tabIndicator.Size = UDim2.new(1 / 3, -6, 1, -6)
+tabIndicator.Position = UDim2.fromOffset(3, 3)
+tabIndicator.BackgroundColor3 = THEME.NeonCyan
+tabIndicator.BackgroundTransparency = 0.82
+tabIndicator.BorderSizePixel = 0
+tabIndicator.Parent = tabBar
+
+local indCorner = Instance.new("UICorner")
+indCorner.CornerRadius = UDim.new(0, 7)
+indCorner.Parent = tabIndicator
+
+local indStroke = Instance.new("UIStroke")
+indStroke.Thickness = 1.2
+indStroke.Color = THEME.NeonCyan
+indStroke.Parent = tabIndicator
+
+-- Контейнер страниц
+local pagesHolder = Instance.new("Frame")
+pagesHolder.Size = UDim2.new(1, -24, 1, -100)
+pagesHolder.Position = UDim2.fromOffset(12, 92)
+pagesHolder.BackgroundTransparency = 1
+pagesHolder.Parent = mainFrame
+
+local tabNames = { "🎯 LOCK-ON", "✨ OVERLAY", "⚡ PHYSICS" }
+local pages: { ScrollingFrame } = {}
+local tabButtons: { TextButton } = {}
+
+local function switchTab(index: number)
+	for i, page in ipairs(pages) do
+		page.Visible = (i == index)
+		tabButtons[i].TextColor3 = (i == index) and THEME.NeonCyan or THEME.TextDim
+	end
+	quickTween(tabIndicator, 0.25, {
+		Position = UDim2.new((index - 1) / 3, 3, 0, 3),
+	})
+end
+
+for i, name in ipairs(tabNames) do
+	local btn = Instance.new("TextButton")
+	btn.Size = UDim2.new(1 / 3, 0, 1, 0)
+	btn.Position = UDim2.fromScale((i - 1) / 3, 0)
+	btn.BackgroundTransparency = 1
+	btn.Text = name
+	btn.TextColor3 = (i == 1) and THEME.NeonCyan or THEME.TextDim
+	btn.Font = Enum.Font.GothamBold
+	btn.TextSize = 12
+	btn.ZIndex = 2
+	btn.Parent = tabBar
+	table.insert(tabButtons, btn)
+
+	local page = Instance.new("ScrollingFrame")
+	page.Size = UDim2.fromScale(1, 1)
+	page.BackgroundTransparency = 1
+	page.BorderSizePixel = 0
+	page.ScrollBarThickness = 3
+	page.ScrollBarImageColor3 = THEME.NeonCyan
+	page.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	page.CanvasSize = UDim2.new(0, 0, 0, 0)
+	page.Visible = (i == 1)
+	page.Parent = pagesHolder
+
+	local listLayout = Instance.new("UIListLayout")
+	listLayout.Padding = UDim.new(0, 8)
+	listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	listLayout.Parent = page
+
+	local pad = Instance.new("UIPadding")
+	pad.PaddingBottom = UDim.new(0, 8)
+	pad.Parent = page
+
+	table.insert(pages, page)
+	btn.MouseButton1Click:Connect(function()
+		switchTab(i)
+	end)
+end
+
+-- Фабрика UI-элементов (переключатели, ползунки, кнопки действия)
+local function addToggle(parent: Instance, title: string, getVal: () -> boolean, setVal: (boolean) -> ())
+	local row = Instance.new("Frame")
+	row.Size = UDim2.new(1, -6, 0, 38)
+	row.BackgroundColor3 = THEME.BgElement
+	row.BorderSizePixel = 0
+	row.Parent = parent
+
+	local rCorner = Instance.new("UICorner")
+	rCorner.CornerRadius = UDim.new(0, 9)
+	rCorner.Parent = row
+
+	local lbl = Instance.new("TextLabel")
+	lbl.Size = UDim2.new(1, -68, 1, 0)
+	lbl.Position = UDim2.fromOffset(12, 0)
+	lbl.BackgroundTransparency = 1
+	lbl.Text = title
+	lbl.TextColor3 = THEME.TextMain
+	lbl.Font = Enum.Font.GothamMedium
+	lbl.TextSize = 12
+	lbl.TextXAlignment = Enum.TextXAlignment.Left
+	lbl.Parent = row
+
+	local switchBg = Instance.new("TextButton")
+	switchBg.Size = UDim2.fromOffset(44, 22)
+	switchBg.Position = UDim2.new(1, -54, 0.5, -11)
+	switchBg.BackgroundColor3 = THEME.BgDark
+	switchBg.Text = ""
+	switchBg.AutoButtonColor = false
+	switchBg.Parent = row
+
+	local sCorner = Instance.new("UICorner")
+	sCorner.CornerRadius = UDim.new(1, 0)
+	sCorner.Parent = switchBg
+
+	local sStroke = Instance.new("UIStroke")
+	sStroke.Thickness = 1.4
+	sStroke.Color = THEME.TextDim
+	sStroke.Parent = switchBg
+
+	local knob = Instance.new("Frame")
+	knob.Size = UDim2.fromOffset(16, 16)
+	knob.Position = UDim2.fromOffset(3, 3)
+	knob.BackgroundColor3 = THEME.TextDim
+	knob.BorderSizePixel = 0
+	knob.Parent = switchBg
+
+	local kCorner = Instance.new("UICorner")
+	kCorner.CornerRadius = UDim.new(1, 0)
+	kCorner.Parent = knob
+
+	local function refresh()
+		local state = getVal()
+		quickTween(knob, 0.2, {
+			Position = state and UDim2.fromOffset(25, 3) or UDim2.fromOffset(3, 3),
+			BackgroundColor3 = state and THEME.NeonCyan or THEME.TextDim,
+		})
+		quickTween(sStroke, 0.2, {
+			Color = state and THEME.NeonCyan or THEME.TextDim,
+		})
+	end
+
+	switchBg.MouseButton1Click:Connect(function()
+		setVal(not getVal())
+		refresh()
+	end)
+
+	table.insert(uiRefreshCallbacks, refresh)
+	refresh()
+end
+
+local function addSlider(parent: Instance, title: string, minV: number, maxV: number, decimals: number, getVal: () -> number, setVal: (number) -> ())
+	local box = Instance.new("Frame")
+	box.Size = UDim2.new(1, -6, 0, 50)
+	box.BackgroundColor3 = THEME.BgElement
+	box.BorderSizePixel = 0
+	box.Parent = parent
+
+	local bCorner = Instance.new("UICorner")
+	bCorner.CornerRadius = UDim.new(0, 9)
+	bCorner.Parent = box
+
+	local lbl = Instance.new("TextLabel")
+	lbl.Size = UDim2.new(0.65, 0, 0, 22)
+	lbl.Position = UDim2.fromOffset(12, 4)
+	lbl.BackgroundTransparency = 1
+	lbl.Text = title
+	lbl.TextColor3 = THEME.TextMain
+	lbl.Font = Enum.Font.GothamMedium
+	lbl.TextSize = 12
+	lbl.TextXAlignment = Enum.TextXAlignment.Left
+	lbl.Parent = box
+
+	local valLbl = Instance.new("TextLabel")
+	valLbl.Size = UDim2.new(0.3, -12, 0, 22)
+	valLbl.Position = UDim2.new(0.7, 0, 0, 4)
+	valLbl.BackgroundTransparency = 1
+	valLbl.TextColor3 = THEME.NeonCyan
+	valLbl.Font = Enum.Font.GothamBold
+	valLbl.TextSize = 12
+	valLbl.TextXAlignment = Enum.TextXAlignment.Right
+	valLbl.Parent = box
+
+	local track = Instance.new("Frame")
+	track.Size = UDim2.new(1, -24, 0, 8)
+	track.Position = UDim2.fromOffset(12, 32)
+	track.BackgroundColor3 = THEME.BgDark
+	track.BorderSizePixel = 0
+	track.Parent = box
+
+	local tCorner = Instance.new("UICorner")
+	tCorner.CornerRadius = UDim.new(1, 0)
+	tCorner.Parent = track
+
+	local fill = Instance.new("Frame")
+	fill.Size = UDim2.fromScale(0.5, 1)
+	fill.BackgroundColor3 = THEME.NeonCyan
+	fill.BorderSizePixel = 0
+	fill.Parent = track
+
+	local fCorner = Instance.new("UICorner")
+	fCorner.CornerRadius = UDim.new(1, 0)
+	fCorner.Parent = fill
+
+	local grad = Instance.new("UIGradient")
+	grad.Color = ColorSequence.new(THEME.NeonCyan, THEME.NeonPurple)
+	grad.Parent = fill
+
+	local function refresh()
+		local cur = math.clamp(getVal(), minV, maxV)
+		local ratio = (cur - minV) / (maxV - minV)
+		fill.Size = UDim2.fromScale(ratio, 1)
+		valLbl.Text = string.format("%." .. decimals .. "f", cur)
+	end
+
+	local dragging = false
+	local function updateFromInput(inputPos: Vector3)
+		local absPos = track.AbsolutePosition.X
+		local absSize = track.AbsoluteSize.X
+		if absSize <= 0 then return end
+		local pct = math.clamp((inputPos.X - absPos) / absSize, 0, 1)
+		local mult = 10 ^ decimals
+		local newVal = math.round((minV + (maxV - minV) * pct) * mult) / mult
+		setVal(newVal)
+		refresh()
+	end
+
+	track.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+			updateFromInput(input.Position)
+		end
+	end)
+
+	UserInputService.InputChanged:Connect(function(input)
+		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+			updateFromInput(input.Position)
+		end
+	end)
+
+	UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = false
+		end
+	end)
+
+	table.insert(uiRefreshCallbacks, refresh)
+	refresh()
+end
+
+local function addActionButton(parent: Instance, title: string, accent: Color3, onClick: () -> ())
+	local btn = Instance.new("TextButton")
+	btn.Size = UDim2.new(1, -6, 0, 36)
+	btn.BackgroundColor3 = THEME.BgElement
+	btn.Text = title
+	btn.TextColor3 = accent
+	btn.Font = Enum.Font.GothamBold
+	btn.TextSize = 12
+	btn.AutoButtonColor = false
+	btn.Parent = parent
+
+	local bCorner = Instance.new("UICorner")
+	bCorner.CornerRadius = UDim.new(0, 9)
+	bCorner.Parent = btn
+
+	local bStroke = Instance.new("UIStroke")
+	bStroke.Thickness = 1.2
+	bStroke.Color = accent
+	bStroke.Transparency = 0.45
+	bStroke.Parent = btn
+
+	btn.MouseButton1Click:Connect(function()
+		quickTween(btn, 0.1, { BackgroundColor3 = accent, TextColor3 = THEME.BgDark })
+		task.delay(0.12, function()
+			quickTween(btn, 0.2, { BackgroundColor3 = THEME.BgElement, TextColor3 = accent })
+		end)
+		onClick()
+	end)
+end
+
+-- ============================================================================
+-- 7. НАПОЛНЕНИЕ ВКЛАДОК ФУНКЦИЯМИ
+-- ============================================================================
+-- Вкладка 1: LOCK-ON
+local lockPage = pages[1]
+addToggle(lockPage, "Активировать Lock-On камеры", function() return STATE.LockEnabled end, function(v)
+	STATE.LockEnabled = v
+	fovCircle.Visible = v and STATE.ShowFovCircle
+	if not v then isLocking = false; currentTarget = nil; clearTargetBeam() end
+end)
+addToggle(lockPage, "Режим Toggle (нажал — держит)", function() return STATE.LockToggleMode end, function(v)
+	STATE.LockToggleMode = v
+	isLocking = false
+	currentTarget = nil
+	clearTargetBeam()
+end)
+addToggle(lockPage, "Показывать неоновый круг FOV", function() return STATE.ShowFovCircle end, function(v)
+	STATE.ShowFovCircle = v
+	fovCircle.Visible = STATE.LockEnabled and v
+end)
+addToggle(lockPage, "Неоновый луч-трассер до цели", function() return STATE.ShowTargetBeam end, function(v)
+	STATE.ShowTargetBeam = v
+	if not v then clearTargetBeam() end
+end)
+addActionButton(lockPage, "Часть наведения: Torso / Head", THEME.NeonPurple, function()
+	STATE.LockTargetPart = (STATE.LockTargetPart == "HumanoidRootPart") and "Head" or "HumanoidRootPart"
+end)
+addSlider(lockPage, "Радиус поиска цели (px)", 80, 480, 0, function() return STATE.LockRadiusPx end, function(v)
+	STATE.LockRadiusPx = v
+	fovCircle.Size = UDim2.fromOffset(v * 2, v * 2)
+end)
+addSlider(lockPage, "Плавность доводки камеры", 0.05, 0.85, 2, function() return STATE.LockSmoothness end, function(v)
+	STATE.LockSmoothness = v
+end)
+
+-- Вкладка 2: OVERLAY & VISUALS
+local overlayPage = pages[2]
+addToggle(overlayPage, "Оверлей здоровья над головой", function() return STATE.OverlayEnabled end, function(v)
+	STATE.OverlayEnabled = v
+	for _, data in pairs(activeOverlays) do
+		data.billboard.Enabled = v and data.isVisible
+	end
+end)
+addToggle(overlayPage, "Неоновая обводка силуэта (Chams)", function() return STATE.ShowHighlight end, function(v)
+	STATE.ShowHighlight = v
+	for _, data in pairs(activeOverlays) do
+		data.highlight.Enabled = v and data.isVisible
+	end
+end)
+addToggle(overlayPage, "Неоновые искры над головой", function() return STATE.ParticlesEnabled end, function(v)
+	STATE.ParticlesEnabled = v
+	for _, data in pairs(activeOverlays) do
+		data.emitter.Enabled = v and data.isVisible
+	end
+end)
+addSlider(overlayPage, "Дистанция видимости (studs)", 100, 800, 0, function() return STATE.OverlayMaxDistance end, function(v)
+	STATE.OverlayMaxDistance = v
+	for _, data in pairs(activeOverlays) do
+		data.billboard.MaxDistance = v
+	end
+end)
+
+-- Вкладка 3: PHYSICS & MOVEMENT LAB
+local physPage = pages[3]
+addSlider(physPage, "Скорость бега (WalkSpeed)", 16, 130, 0, function() return STATE.CustomWalkSpeed end, function(v)
+	STATE.CustomWalkSpeed = v
+	local hum = localPlayer.Character and localPlayer.Character:FindFirstChildOfClass("Humanoid")
+	if hum then hum.WalkSpeed = v end
+end)
+addSlider(physPage, "Сила прыжка (JumpPower)", 50, 220, 0, function() return STATE.CustomJumpPower end, function(v)
+	STATE.CustomJumpPower = v
+	local hum = localPlayer.Character and localPlayer.Character:FindFirstChildOfClass("Humanoid")
+	if hum then
+		hum.UseJumpPower = true
+		hum.JumpPower = v
+	end
+end)
+addToggle(physPage, "Air-Jump (прыжки в воздухе)", function() return STATE.InfiniteJump end, function(v)
+	STATE.InfiniteJump = v
+end)
+addToggle(physPage, "Free-Fly (полёт по камере)", function() return STATE.FlyEnabled end, function(v)
+	STATE.FlyEnabled = v
+	local hum = localPlayer.Character and localPlayer.Character:FindFirstChildOfClass("Humanoid")
+	if hum then hum.PlatformStand = v end
+end)
+addActionButton(physPage, "⚡ Телепорт к цели в радиусе", THEME.NeonCyan, function()
+	local target = currentTarget or findClosestTarget()
+	local myRoot = localPlayer.Character and localPlayer.Character:FindFirstChild("HumanoidRootPart") :: BasePart?
+	local tRoot = target and target:FindFirstChild("HumanoidRootPart") :: BasePart?
+	if myRoot and tRoot then
+		myRoot.CFrame = tRoot.CFrame * CFrame.new(0, 0, 4)
+	end
+end)
+addActionButton(physPage, "↺ Сбросить все настройки", THEME.NeonPink, function()
+	STATE.LockEnabled = true
+	STATE.LockToggleMode = false
+	STATE.LockRadiusPx = 220
+	STATE.LockSmoothness = 0.22
+	STATE.OverlayEnabled = true
+	STATE.ShowHighlight = true
+	STATE.ParticlesEnabled = true
+	STATE.CustomWalkSpeed = 16
+	STATE.CustomJumpPower = 50
+	STATE.InfiniteJump = false
+	STATE.FlyEnabled = false
+	fovCircle.Size = UDim2.fromOffset(440, 440)
+	local hum = localPlayer.Character and localPlayer.Character:FindFirstChildOfClass("Humanoid")
+	if hum then
+		hum.WalkSpeed = 16
+		hum.JumpPower = 50
+		hum.PlatformStand = false
+	end
+	for _, cb in ipairs(uiRefreshCallbacks) do cb() end
+end)
+
+-- ============================================================================
+-- 8. АНИМАЦИЯ ОТКРЫТИЯ / ЗАКРЫТИЯ И ПЕРЕТАСКИВАНИЕ (MOUSE + TOUCH)
+-- ============================================================================
+local function setMenuVisible(visible: boolean)
+	STATE.MenuOpen = visible
+	if visible then
+		mainFrame.Visible = true
+		uiScale.Scale = 0.85
+		quickTween(uiScale, 0.28, { Scale = 1 }, Enum.EasingStyle.Back)
+	else
+		local tw = quickTween(uiScale, 0.18, { Scale = 0.85 }, Enum.EasingStyle.Quad)
+		tw.Completed:Once(function()
+			if not STATE.MenuOpen then
+				mainFrame.Visible = false
+			end
+		end)
+	end
+end
+
+local function makeDraggable(dragHandle: GuiObject, moveTarget: GuiObject)
+	local dragging = false
+	local dragStart = Vector3.zero
+	local startPos = UDim2.new()
+
+	dragHandle.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+			dragStart = input.Position
+			startPos = moveTarget.Position
+		end
+	end)
+
+	UserInputService.InputChanged:Connect(function(input)
+		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+			local delta = input.Position - dragStart
+			moveTarget.Position = UDim2.new(
+				startPos.X.Scale, startPos.X.Offset + delta.X,
+				startPos.Y.Scale, startPos.Y.Offset + delta.Y
+			)
+		end
+	end)
+
+	UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = false
+		end
+	end)
+end
+
+makeDraggable(header, mainFrame)
+makeDraggable(openPill, openPill)
+
+openPill.MouseButton1Click:Connect(function()
+	setMenuVisible(not STATE.MenuOpen)
+end)
+closeBtn.MouseButton1Click:Connect(function()
+	setMenuVisible(false)
+end)
+
+-- ============================================================================
+-- 9. ЦИКЛЫ ОБНОВЛЕНИЯ КАМЕРЫ, ФИЗИКИ И РЕНДЕРА
+-- ============================================================================
+local function onCameraStep(dt: number)
 	local activeCam = camera
 	if not activeCam then return end
+
+	if not STATE.LockEnabled or not isLocking then
+		clearTargetBeam()
+		fovStroke.Color = THEME.NeonCyan
+		return
+	end
 
 	local valid, targetPart = isValidTarget(currentTarget)
 	if not valid or not targetPart then
 		currentTarget = findClosestTarget()
 		valid, targetPart = isValidTarget(currentTarget)
 		if not valid or not targetPart then
+			clearTargetBeam()
+			fovStroke.Color = THEME.NeonCyan
 			return
 		end
 	end
 
-	-- Сохраняем стандартный тип управления камерой Custom
+	fovStroke.Color = THEME.NeonPink
+	updateTargetBeam(targetPart)
+
 	if activeCam.CameraType ~= Enum.CameraType.Custom then
 		activeCam.CameraType = Enum.CameraType.Custom
 	end
 
 	local camPos = activeCam.CFrame.Position
 	local goalCFrame = CFrame.lookAt(camPos, targetPart.Position)
-
-	-- Плавная интерполяция с компенсацией частоты кадров (30 / 60 / 120 FPS)
-	local alpha = 1 - math.exp(-CONFIG.LOCK_SMOOTHNESS * 60 * dt)
+	local alpha = 1 - math.exp(-STATE.LockSmoothness * 60 * dt)
 	activeCam.CFrame = activeCam.CFrame:Lerp(goalCFrame, alpha)
 end
 
--- ============================================================================
--- 5. ЕДИНЫЙ ЦИКЛ ОПТИМИЗИРОВАННОГО ОБНОВЛЕНИЯ (RENDERSTEPPED)
--- ============================================================================
-local elapsedAccumulator = 0
-
+local elapsedTime = 0
 local function onRenderStepped(dt: number)
+	elapsedTime += dt
+
+	-- Плавное вращение неоновой рамки меню (только когда меню открыто)
+	if mainFrame.Visible then
+		borderGradient.Rotation = (elapsedTime * 75) % 360
+	end
+
 	local activeCam = camera
 	if not activeCam then return end
-
-	elapsedAccumulator += dt
 	local camPos = activeCam.CFrame.Position
-	local pulseWave: number? = nil
 
+	-- Полёт (Free-Fly) через MoveDirection (работает и с WASD, и со стиком на телефоне)
+	if STATE.FlyEnabled then
+		local char = localPlayer.Character
+		local root = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		if root and hum then
+			hum.PlatformStand = true
+			local moveDir = hum.MoveDirection
+			local flyVel = Vector3.zero
+			if moveDir.Magnitude > 0.05 then
+				-- Проецируем движение по направлению взгляда камеры
+				local camLook = activeCam.CFrame.LookVector
+				local camRight = activeCam.CFrame.RightVector
+				local flatLook = Vector3.new(camLook.X, 0, camLook.Z).Unit
+				local forwardAmt = moveDir:Dot(flatLook)
+				local rightAmt = moveDir:Dot(camRight)
+				flyVel = (camLook * forwardAmt + camRight * rightAmt) * STATE.FlySpeed
+			end
+			root.AssemblyLinearVelocity = flyVel
+		end
+	end
+
+	-- Обновление оверлеев, дистанции и пульсации
+	local pulseWave: number? = nil
 	for _, data in pairs(activeOverlays) do
 		local root = data.rootPart
 		if root and root.Parent then
 			local dist = (root.Position - camPos).Magnitude
-			local shouldBeVisible = dist <= CONFIG.OVERLAY_MAX_DISTANCE
+			local inRange = dist <= STATE.OverlayMaxDistance
 
-			-- Переключаем рендер и частицы только в момент пересечения порога дистанции
-			if data.isVisible ~= shouldBeVisible then
-				data.isVisible = shouldBeVisible
-				data.billboard.Enabled = shouldBeVisible
-				if data.emitter then
-					data.emitter.Enabled = shouldBeVisible
-				end
+			if data.isVisible ~= inRange then
+				data.isVisible = inRange
+				data.billboard.Enabled = inRange and STATE.OverlayEnabled
+				data.highlight.Enabled = inRange and STATE.ShowHighlight
+				data.emitter.Enabled = inRange and STATE.ParticlesEnabled
 			end
 
-			-- Синусоида вычисляется лениво (1 раз за кадр) и только если в кадре есть раненый игрок
-			if shouldBeVisible and data.isLowHp and data.fadeReady then
-				if not pulseWave then
-					pulseWave = (math.sin(elapsedAccumulator * CONFIG.PULSE_SPEED) + 1) * 0.5
+			if inRange then
+				if STATE.OverlayEnabled then
+					data.distLabel.Text = string.format("%dm • %d HP", math.floor(dist * 0.28), math.ceil(data.humanoid.Health))
 				end
-				data.glowStroke.Transparency = 0.1 + (pulseWave * 0.55)
-				data.glowImage.ImageTransparency = 0.25 + (pulseWave * 0.55)
+				if data.isLowHp and data.fadeReady then
+					if not pulseWave then
+						pulseWave = (math.sin(elapsedTime * 7.5) + 1) * 0.5
+					end
+					data.glowStroke.Transparency = 0.08 + (pulseWave * 0.55)
+					data.glowImage.ImageTransparency = 0.2 + (pulseWave * 0.55)
+				end
 			end
 		end
 	end
 end
 
 -- ============================================================================
--- 6. ИНИЦИАЛИЗАЦИЯ, ВВОД И ОЧИСТКА ПРИ ВЫХОДЕ ИГРОКА
+-- 10. ВВОД, ЖИЗНЕННЫЙ ЦИКЛ ИГРОКОВ И ОЧИСТКА
 -- ============================================================================
+UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
+	if not gameProcessed and (input.KeyCode == STATE.MenuKey or input.KeyCode == STATE.AltMenuKey) then
+		setMenuVisible(not STATE.MenuOpen)
+		return
+	end
+
+	if STATE.LockEnabled then
+		if input.UserInputType == STATE.LockKey or (not gameProcessed and input.KeyCode == STATE.LockAltKey) then
+			if STATE.LockToggleMode then
+				isLocking = not isLocking
+				currentTarget = isLocking and findClosestTarget() or nil
+			else
+				isLocking = true
+				currentTarget = findClosestTarget()
+			end
+		end
+	end
+end)
+
+UserInputService.InputEnded:Connect(function(input: InputObject)
+	if not STATE.LockToggleMode then
+		if input.UserInputType == STATE.LockKey or input.KeyCode == STATE.LockAltKey then
+			isLocking = false
+			currentTarget = nil
+		end
+	end
+end)
+
+-- Прыжок в воздухе (Air-Jump) с неоновой вспышкой под ногами
+UserInputService.JumpRequest:Connect(function()
+	if not STATE.InfiniteJump then return end
+	local char = localPlayer.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	local root = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
+	if hum and root and hum:GetState() == Enum.HumanoidStateType.Freefall then
+		hum:ChangeState(Enum.HumanoidStateType.Jumping)
+	end
+end)
+
+-- Сохранение пользовательских настроек скорости/прыжка при респавне локального игрока
+localPlayer.CharacterAdded:Connect(function(char)
+	local hum = char:WaitForChild("Humanoid", 5) :: Humanoid?
+	if hum then
+		hum.WalkSpeed = STATE.CustomWalkSpeed
+		hum.UseJumpPower = true
+		hum.JumpPower = STATE.CustomJumpPower
+	end
+end)
+
 local function setupPlayer(player: Player)
 	if player == localPlayer then return end
-
 	if player.Character then
 		task.spawn(createOverlay, player, player.Character)
 	end
-
 	playerConnections[player] = player.CharacterAdded:Connect(function(character)
 		createOverlay(player, character)
 	end)
@@ -474,29 +1250,12 @@ end
 
 local function cleanupPlayer(player: Player)
 	local conn = playerConnections[player]
-	if conn then
-		if conn.Connected then
-			conn:Disconnect()
-		end
-		playerConnections[player] = nil
+	if conn and conn.Connected then
+		conn:Disconnect()
 	end
+	playerConnections[player] = nil
 	removeOverlay(player)
 end
-
-UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
-	if not CONFIG.LOCK_ENABLED then return end
-	if input.UserInputType == CONFIG.LOCK_KEY or (not gameProcessed and input.KeyCode == CONFIG.LOCK_ALT_KEY) then
-		isLocking = true
-		currentTarget = findClosestTarget()
-	end
-end)
-
-UserInputService.InputEnded:Connect(function(input: InputObject)
-	if input.UserInputType == CONFIG.LOCK_KEY or input.KeyCode == CONFIG.LOCK_ALT_KEY then
-		isLocking = false
-		currentTarget = nil
-	end
-end)
 
 for _, player in ipairs(Players:GetPlayers()) do
 	setupPlayer(player)
@@ -509,5 +1268,5 @@ Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
 	camera = Workspace.CurrentCamera
 end)
 
-RunService:BindToRenderStep("DebugLockOnCamera", Enum.RenderPriority.Camera.Value + 1, onCameraStep)
+RunService:BindToRenderStep("NeonLockOnStep", Enum.RenderPriority.Camera.Value + 1, onCameraStep)
 RunService.RenderStepped:Connect(onRenderStepped)
