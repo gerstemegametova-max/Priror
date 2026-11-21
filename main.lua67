@@ -1,10 +1,12 @@
 --!strict
 --[[
-    NEON DEV & TRAINING SUITE v3.2 (Universal LocalScript)
-    Исправлено:
-    - Накопительное сглаживание Lock-On поверх ClassicCamera (работает в 1-м и 3-м лице).
-    - Кнопка быстрого захвата цели на экране (для Android/Touch и ПК) + ПКМ / E / ЛКМ.
-    - Поддержка любых ригов ботов (R15, R6, кастомные манекены).
+    NEON DEV & TRAINING SUITE v3.4 (Universal LocalScript)
+    Модули:
+    1. Neon Dashed UI (пунктирная рамка меню, переключатель Lime / Red, анимации).
+    2. Lock-On System (раздельный выбор Голова / Тело, упреждение по скорости цели, FOV-круг).
+    3. Players Visuals (настройка объёма информации плашек, масштаб, 3D-лучи, Chams, частицы).
+    4. Bot / NPC ESP (автопоиск NPC в Workspace, компактные плашки, подсветка, частицы).
+    5. Physics Lab (WalkSpeed, JumpPower, Air-Jump, Free-Fly, Noclip, Teleport).
 ]]
 
 -- ============================================================================
@@ -32,17 +34,23 @@ local STATE = {
 
 	-- Вкладка 1: Lock-On
 	LockEnabled = true,
-	LockToggleMode = false,    -- Для клавиатуры/ПКМ: false = удержание, true = переключение
-	LockOnFire = false,        -- Авто-захват при зажатии ЛКМ / тапе по экрану
+	LockToggleMode = false,
+	LockOnFire = false,
 	LockIncludeBots = true,
 	LockKey = Enum.UserInputType.MouseButton2,
 	LockAltKey = Enum.KeyCode.E,
 	LockRadiusPx = 240,
-	LockSmoothness = 0.28,
+	LockSmoothness = 0.30,
 	LockMaxDistance = 400,
-	LockTargetPart = "HumanoidRootPart", -- "HumanoidRootPart" или "Head"
+	LockTargetPart = "Head", -- "Head" (Голова) или "HumanoidRootPart" (Тело)
+	LockPredictionEnabled = true,
+	LockPredictionTime = 0.16,
 	ShowFovCircle = true,
 	ShowLockBeam = true,
+
+	-- Общие настройки плашек ESP (уменьшение информации и размер)
+	EspDetailMode = "COMPACT", -- "FULL" (всё), "COMPACT" (имя + HP), "MINIMAL" (только полоска HP)
+	EspScale = 0.85,           -- Масштаб плашек (0.55 - 1.30)
 
 	-- Вкладка 2: Players
 	PlayerOverlayEnabled = true,
@@ -103,7 +111,10 @@ type EntityOverlay = {
 	rootPart: BasePart,
 	head: BasePart,
 	billboard: BillboardGui,
+	card: Frame,
 	boxStroke: UIStroke,
+	nameLabel: TextLabel,
+	barBg: Frame,
 	hpFill: Frame,
 	hpGhost: Frame,
 	distLabel: TextLabel,
@@ -129,7 +140,7 @@ local playerConnections: { [Player]: RBXScriptConnection } = {}
 local uiRefreshCallbacks: { () -> () } = {}
 
 -- ============================================================================
--- 3. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (TWEEN, ПУНКТИР, ЧАСТИ ТЕЛА)
+-- 3. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (TWEEN, ПУНКТИР, ЧАСТИ ТЕЛА, УПРЕЖДЕНИЕ)
 -- ============================================================================
 local function quickTween(inst: Instance, duration: number, props: { [string]: any }, style: Enum.EasingStyle?)
 	local info = TweenInfo.new(duration, style or Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
@@ -185,7 +196,6 @@ local function getHealthColor(percent: number): Color3
 	end
 end
 
--- Универсальный поиск опорной части тела для любых моделей (R15, R6, кастомные NPC)
 local function getCharacterRoot(character: Model): BasePart?
 	local root = character:FindFirstChild("HumanoidRootPart")
 		or character:FindFirstChild("Torso")
@@ -205,6 +215,20 @@ local function getTargetAimPart(character: Model): BasePart?
 	return getCharacterRoot(character)
 end
 
+local function getPredictedAimPosition(targetPart: BasePart): Vector3
+	if not STATE.LockPredictionEnabled or STATE.LockPredictionTime <= 0 then
+		return targetPart.Position
+	end
+
+	local vel = targetPart.AssemblyLinearVelocity
+	if vel.Magnitude < 0.5 then
+		return targetPart.Position
+	end
+
+	local leadVector = Vector3.new(vel.X, vel.Y * 0.6, vel.Z) * STATE.LockPredictionTime
+	return targetPart.Position + leadVector
+end
+
 local function disableNoclip()
 	STATE.NoclipEnabled = false
 	for part, wasCollidable in pairs(noclipCachedParts) do
@@ -216,8 +240,62 @@ local function disableNoclip()
 end
 
 -- ============================================================================
--- 4. МОДУЛЬ ОВЕРЛЕЕВ (ИГРОКИ + БОТЫ + ПРЕРЫВИСТЫЕ ЛУЧИ + ЧАСТИЦЫ)
+-- 4. МОДУЛЬ ОВЕРЛЕЕВ (УМЕНЬШЕНИЕ ИНФОРМАЦИИ ПЛАШЕК + ЛУЧИ + ЧАСТИЦЫ)
 -- ============================================================================
+
+-- Применяет выбранный режим объёма информации (FULL / COMPACT / MINIMAL) и масштаб к плашке
+local function applyOverlayCompactness(data: EntityOverlay)
+	local s = STATE.EspScale
+	local mode = STATE.EspDetailMode
+
+	if mode == "FULL" then
+		data.billboard.Size = UDim2.fromOffset(math.round(184 * s), math.round(54 * s))
+		data.billboard.StudsOffset = Vector3.new(0, 3.2, 0)
+		data.card.BackgroundTransparency = 0.42
+		data.boxStroke.Enabled = true
+		data.nameLabel.Visible = true
+		data.nameLabel.Size = UDim2.new(1, -8, 0.40, 0)
+		data.nameLabel.Position = UDim2.fromOffset(4, 2)
+		data.nameLabel.TextSize = math.max(9, math.round(12 * s))
+		data.barBg.Size = UDim2.new(0.88, 0, 0.18, 0)
+		data.barBg.Position = UDim2.new(0.06, 0, 0.46, 0)
+		data.distLabel.Visible = true
+		data.distLabel.TextSize = math.max(8, math.round(10 * s))
+	elseif mode == "COMPACT" then
+		-- Компактная плашка: убираем нижнюю строку (дистанцию и цифры HP), сжимаем карточку
+		data.billboard.Size = UDim2.fromOffset(math.round(132 * s), math.round(34 * s))
+		data.billboard.StudsOffset = Vector3.new(0, 2.8, 0)
+		data.card.BackgroundTransparency = 0.48
+		data.boxStroke.Enabled = true
+		data.nameLabel.Visible = true
+		data.nameLabel.Size = UDim2.new(1, -6, 0.52, 0)
+		data.nameLabel.Position = UDim2.fromOffset(3, 1)
+		data.nameLabel.TextSize = math.max(9, math.round(11 * s))
+		data.barBg.Size = UDim2.new(0.88, 0, 0.24, 0)
+		data.barBg.Position = UDim2.new(0.06, 0, 0.62, 0)
+		data.distLabel.Visible = false
+	else
+		-- MINIMAL: только аккуратная полоска HP без текста и фона карточки
+		data.billboard.Size = UDim2.fromOffset(math.round(88 * s), math.round(14 * s))
+		data.billboard.StudsOffset = Vector3.new(0, 2.5, 0)
+		data.card.BackgroundTransparency = 1
+		data.boxStroke.Enabled = false
+		data.nameLabel.Visible = false
+		data.distLabel.Visible = false
+		data.barBg.Size = UDim2.new(0.92, 0, 0.56, 0)
+		data.barBg.Position = UDim2.new(0.04, 0, 0.22, 0)
+	end
+end
+
+local function refreshAllOverlayLayouts()
+	for _, data in pairs(playerOverlays) do
+		applyOverlayCompactness(data)
+	end
+	for _, data in pairs(botOverlays) do
+		applyOverlayCompactness(data)
+	end
+end
+
 local function destroyTracer(data: EntityOverlay)
 	if data.tracerBeam then data.tracerBeam:Destroy(); data.tracerBeam = nil end
 	if data.tracerAtt0 then data.tracerAtt0:Destroy(); data.tracerAtt0 = nil end
@@ -360,8 +438,8 @@ local function createEntityOverlay(character: Model, displayName: string, isBot:
 	local billboard = Instance.new("BillboardGui")
 	billboard.Name = isBot and "BotEspOverlay" or "PlayerEspOverlay"
 	billboard.Adornee = head
-	billboard.Size = UDim2.fromOffset(190, 58)
-	billboard.StudsOffset = Vector3.new(0, 3.3, 0)
+	billboard.Size = UDim2.fromOffset(184, 54)
+	billboard.StudsOffset = Vector3.new(0, 3.2, 0)
 	billboard.AlwaysOnTop = true
 	billboard.LightInfluence = 0
 	billboard.MaxDistance = isBot and STATE.BotMaxDistance or STATE.MaxDistance
@@ -369,18 +447,18 @@ local function createEntityOverlay(character: Model, displayName: string, isBot:
 	billboard.ResetOnSpawn = false
 
 	local card = Instance.new("Frame")
-	card.Size = UDim2.new(1, -6, 1, -6)
-	card.Position = UDim2.fromOffset(3, 3)
+	card.Size = UDim2.new(1, -4, 1, -4)
+	card.Position = UDim2.fromOffset(2, 2)
 	card.BackgroundColor3 = COLORS.BgDark
 	card.BackgroundTransparency = 0.42
 	card.BorderSizePixel = 0
 	card.Parent = billboard
 
 	local cardCorner = Instance.new("UICorner")
-	cardCorner.CornerRadius = UDim.new(0, 8)
+	cardCorner.CornerRadius = UDim.new(0, 7)
 	cardCorner.Parent = card
 
-	local boxStroke = attachDashedStroke(card, 1.8, isBot and COLORS.Purple or accentColor)
+	local boxStroke = attachDashedStroke(card, 1.6, isBot and COLORS.Purple or accentColor)
 
 	local nameLabel = Instance.new("TextLabel")
 	nameLabel.Size = UDim2.new(1, -8, 0.42, 0)
@@ -390,6 +468,7 @@ local function createEntityOverlay(character: Model, displayName: string, isBot:
 	nameLabel.TextColor3 = isBot and COLORS.Purple or COLORS.TextMain
 	nameLabel.TextTransparency = 1
 	nameLabel.TextStrokeTransparency = 0.4
+	nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
 	nameLabel.Font = Enum.Font.GothamBold
 	nameLabel.TextSize = 12
 	nameLabel.Parent = card
@@ -418,7 +497,7 @@ local function createEntityOverlay(character: Model, displayName: string, isBot:
 	bgCorner.Parent = barBg
 
 	local glowStroke = Instance.new("UIStroke")
-	glowStroke.Thickness = 1.3
+	glowStroke.Thickness = 1.2
 	glowStroke.Transparency = 0.25
 	glowStroke.Color = COLORS.HpHigh
 	glowStroke.Parent = barBg
@@ -523,7 +602,10 @@ local function createEntityOverlay(character: Model, displayName: string, isBot:
 		rootPart = rootPart,
 		head = head,
 		billboard = billboard,
+		card = card,
 		boxStroke = boxStroke,
+		nameLabel = nameLabel,
+		barBg = barBg,
 		hpFill = hpFill,
 		hpGhost = hpGhost,
 		distLabel = distLabel,
@@ -560,6 +642,7 @@ local function createEntityOverlay(character: Model, displayName: string, isBot:
 		playerOverlays[playerKey] = data
 	end
 
+	applyOverlayCompactness(data)
 	syncEntityOverlay(data)
 	quickTween(nameLabel, 0.3, { TextTransparency = 0 }, Enum.EasingStyle.Quad)
 	quickTween(distLabel, 0.3, { TextTransparency = 0.05 }, Enum.EasingStyle.Quad)
@@ -595,7 +678,7 @@ end
 Workspace.DescendantAdded:Connect(tryRegisterBot)
 
 -- ============================================================================
--- 6. МОДУЛЬ LOCK-ON (ПОИСК ЦЕЛИ + ЛУЧ ЗАХВАТА)
+-- 6. МОДУЛЬ LOCK-ON (ПОИСК ЦЕЛИ + ЛУЧ И ТОЧКА УПРЕЖДЕНИЯ)
 -- ============================================================================
 local function clearLockBeam()
 	if lockBeam then lockBeam:Destroy(); lockBeam = nil end
@@ -603,8 +686,8 @@ local function clearLockBeam()
 	if lockAtt1 then lockAtt1:Destroy(); lockAtt1 = nil end
 end
 
-local function updateLockBeam(targetPart: BasePart?)
-	if not STATE.ShowLockBeam or not isLocking or not targetPart then
+local function updateLockBeam(targetPart: BasePart?, predictedWorldPos: Vector3?)
+	if not STATE.ShowLockBeam or not isLocking or not targetPart or not predictedWorldPos then
 		clearLockBeam()
 		return
 	end
@@ -624,10 +707,31 @@ local function updateLockBeam(targetPart: BasePart?)
 		local att1 = Instance.new("Attachment")
 		att1.Parent = targetPart
 
+		local leadDotGui = Instance.new("BillboardGui")
+		leadDotGui.Size = UDim2.fromOffset(14, 14)
+		leadDotGui.AlwaysOnTop = true
+		leadDotGui.LightInfluence = 0
+		leadDotGui.Parent = att1
+
+		local dot = Instance.new("Frame")
+		dot.Size = UDim2.fromScale(1, 1)
+		dot.BackgroundColor3 = COLORS.Red
+		dot.BorderSizePixel = 0
+		dot.Parent = leadDotGui
+
+		local dotCorner = Instance.new("UICorner")
+		dotCorner.CornerRadius = UDim.new(1, 0)
+		dotCorner.Parent = dot
+
+		local dotStroke = Instance.new("UIStroke")
+		dotStroke.Thickness = 1.5
+		dotStroke.Color = Color3.new(1, 1, 1)
+		dotStroke.Parent = dot
+
 		local beam = Instance.new("Beam")
 		beam.Attachment0 = att0
 		beam.Attachment1 = att1
-		beam.Width0 = 0.18
+		beam.Width0 = 0.16
 		beam.Width1 = 0.08
 		beam.FaceCamera = true
 		beam.LightEmission = 1
@@ -639,6 +743,10 @@ local function updateLockBeam(targetPart: BasePart?)
 		lockAtt0 = att0
 		lockAtt1 = att1
 		lockBeam = beam
+	end
+
+	if lockAtt1 then
+		lockAtt1.Position = targetPart.CFrame:PointToObjectSpace(predictedWorldPos)
 	end
 end
 
@@ -692,7 +800,6 @@ local function findClosestTarget(): Model?
 		for botModel, _ in pairs(botOverlays) do
 			evaluateCandidate(botModel)
 		end
-		-- На случай, если бот заспавнился, но ещё не успел попасть в botOverlays
 		for _, desc in ipairs(Workspace:GetDescendants()) do
 			if desc:IsA("Humanoid") and desc.Parent and desc.Parent:IsA("Model") then
 				if Players:GetPlayerFromCharacter(desc.Parent) == nil then
@@ -709,13 +816,12 @@ end
 -- 7. ПОСТРОЕНИЕ АНИМИРОВАННОГО НЕОНОВОГО МЕНЮ + КНОПКА LOCK-ON НА ЭКРАН
 -- ============================================================================
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "NeonDevSuiteV32"
+screenGui.Name = "NeonDevSuiteV34"
 screenGui.ResetOnSpawn = false
 screenGui.IgnoreGuiInset = true
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = playerGui
 
--- Визуальный круг FOV
 local fovCircle = Instance.new("Frame")
 fovCircle.AnchorPoint = Vector2.new(0.5, 0.5)
 fovCircle.Position = UDim2.fromScale(0.5, 0.5)
@@ -731,9 +837,8 @@ fovCorner.Parent = fovCircle
 local fovStroke, _ = attachDashedStroke(fovCircle, 1.8, getAccentColor())
 fovStroke.Transparency = 0.3
 
--- Подпись статуса захвата под кругом FOV
 local lockStatusLabel = Instance.new("TextLabel")
-lockStatusLabel.Size = UDim2.fromOffset(220, 22)
+lockStatusLabel.Size = UDim2.fromOffset(260, 22)
 lockStatusLabel.AnchorPoint = Vector2.new(0.5, 0)
 lockStatusLabel.Position = UDim2.new(0.5, 0, 1, 6)
 lockStatusLabel.BackgroundTransparency = 1
@@ -744,7 +849,6 @@ lockStatusLabel.Font = Enum.Font.GothamBlack
 lockStatusLabel.TextSize = 12
 lockStatusLabel.Parent = fovCircle
 
--- Плавающая кнопка открытия меню
 local openPill = Instance.new("TextButton")
 openPill.Size = UDim2.fromOffset(142, 38)
 openPill.Position = UDim2.new(0, 18, 0.5, -42)
@@ -763,7 +867,6 @@ pillCorner.Parent = openPill
 
 local pillStroke, pillGrad = attachDashedStroke(openPill, 2.2, getAccentColor())
 
--- Плавающая кнопка быстрого переключения Lock-On (работает на Android/Touch и ПК!)
 local lockPill = Instance.new("TextButton")
 lockPill.Size = UDim2.fromOffset(142, 38)
 lockPill.Position = UDim2.new(0, 18, 0.5, 6)
@@ -807,10 +910,9 @@ local function setLockActive(active: boolean)
 	end
 end
 
--- Главное окно меню
 local mainFrame = Instance.new("Frame")
-mainFrame.Size = UDim2.fromOffset(420, 345)
-mainFrame.Position = UDim2.new(0.5, -210, 0.5, -172)
+mainFrame.Size = UDim2.fromOffset(420, 355)
+mainFrame.Position = UDim2.new(0.5, -210, 0.5, -177)
 mainFrame.BackgroundColor3 = COLORS.BgDark
 mainFrame.BackgroundTransparency = 0.05
 mainFrame.Visible = false
@@ -840,7 +942,7 @@ local titleLabel = Instance.new("TextLabel")
 titleLabel.Size = UDim2.new(1, -145, 1, 0)
 titleLabel.Position = UDim2.fromOffset(14, 0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = "⚡ NEON SUITE // v3.2"
+titleLabel.Text = "⚡ NEON SUITE // v3.4"
 titleLabel.TextColor3 = COLORS.TextMain
 titleLabel.Font = Enum.Font.GothamBlack
 titleLabel.TextSize = 13
@@ -1182,11 +1284,11 @@ local function addSlider(parent: Instance, title: string, minV: number, maxV: nu
 	refresh()
 end
 
-local function addActionButton(parent: Instance, title: string, onClick: () -> ())
+local function addActionButton(parent: Instance, getTitle: () -> string, onClick: () -> ())
 	local btn = Instance.new("TextButton")
 	btn.Size = UDim2.new(1, -6, 0, 34)
 	btn.BackgroundColor3 = COLORS.BgElement
-	btn.Text = title
+	btn.Text = getTitle()
 	btn.TextColor3 = getAccentColor()
 	btn.Font = Enum.Font.GothamBold
 	btn.TextSize = 12
@@ -1205,6 +1307,7 @@ local function addActionButton(parent: Instance, title: string, onClick: () -> (
 
 	local function refresh()
 		local accent = getAccentColor()
+		btn.Text = getTitle()
 		btn.TextColor3 = accent
 		bStroke.Color = accent
 	end
@@ -1217,6 +1320,7 @@ local function addActionButton(parent: Instance, title: string, onClick: () -> (
 			quickTween(btn, 0.18, { BackgroundColor3 = COLORS.BgElement, TextColor3 = getAccentColor() })
 		end)
 		onClick()
+		refresh()
 	end)
 end
 
@@ -1229,6 +1333,80 @@ addToggle(lockPage, "Активировать систему Lock-On", function(
 	STATE.LockEnabled = v
 	fovCircle.Visible = v and STATE.ShowFovCircle
 	if not v then setLockActive(false) end
+end)
+
+local boneRow = Instance.new("Frame")
+boneRow.Size = UDim2.new(1, -6, 0, 38)
+boneRow.BackgroundTransparency = 1
+boneRow.Parent = lockPage
+
+local headTargetBtn = Instance.new("TextButton")
+headTargetBtn.Size = UDim2.new(0.49, 0, 1, 0)
+headTargetBtn.Position = UDim2.fromScale(0, 0)
+headTargetBtn.BackgroundColor3 = COLORS.BgElement
+headTargetBtn.Font = Enum.Font.GothamBold
+headTargetBtn.TextSize = 12
+headTargetBtn.AutoButtonColor = false
+headTargetBtn.Parent = boneRow
+
+local headCorner = Instance.new("UICorner")
+headCorner.CornerRadius = UDim.new(0, 8)
+headCorner.Parent = headTargetBtn
+
+local headStroke = Instance.new("UIStroke")
+headStroke.Thickness = 1.6
+headStroke.Parent = headTargetBtn
+
+local bodyTargetBtn = Instance.new("TextButton")
+bodyTargetBtn.Size = UDim2.new(0.49, 0, 1, 0)
+bodyTargetBtn.Position = UDim2.fromScale(0.51, 0)
+bodyTargetBtn.BackgroundColor3 = COLORS.BgElement
+bodyTargetBtn.Font = Enum.Font.GothamBold
+bodyTargetBtn.TextSize = 12
+bodyTargetBtn.AutoButtonColor = false
+bodyTargetBtn.Parent = boneRow
+
+local bodyCorner = Instance.new("UICorner")
+bodyCorner.CornerRadius = UDim.new(0, 8)
+bodyCorner.Parent = bodyTargetBtn
+
+local bodyStroke = Instance.new("UIStroke")
+bodyStroke.Thickness = 1.6
+bodyStroke.Parent = bodyTargetBtn
+
+local function refreshBoneButtons()
+	local accent = getAccentColor()
+	local isHead = (STATE.LockTargetPart == "Head")
+
+	headTargetBtn.Text = isHead and "✓ 🧠 ГОЛОВА" or "🧠 ГОЛОВА"
+	headTargetBtn.TextColor3 = isHead and COLORS.BgDark or COLORS.TextDim
+	headTargetBtn.BackgroundColor3 = isHead and accent or COLORS.BgElement
+	headStroke.Color = isHead and accent or COLORS.TextDim
+
+	bodyTargetBtn.Text = (not isHead) and "✓ 🛡️ ТЕЛО" or "🛡️ ТЕЛО"
+	bodyTargetBtn.TextColor3 = (not isHead) and COLORS.BgDark or COLORS.TextDim
+	bodyTargetBtn.BackgroundColor3 = (not isHead) and accent or COLORS.BgElement
+	bodyStroke.Color = (not isHead) and accent or COLORS.TextDim
+end
+
+headTargetBtn.MouseButton1Click:Connect(function()
+	STATE.LockTargetPart = "Head"
+	refreshBoneButtons()
+end)
+
+bodyTargetBtn.MouseButton1Click:Connect(function()
+	STATE.LockTargetPart = "HumanoidRootPart"
+	refreshBoneButtons()
+end)
+
+table.insert(uiRefreshCallbacks, refreshBoneButtons)
+refreshBoneButtons()
+
+addToggle(lockPage, "Упреждение движения (вперёд цели)", function() return STATE.LockPredictionEnabled end, function(v)
+	STATE.LockPredictionEnabled = v
+end)
+addSlider(lockPage, "Сила упреждения вперёд (сек)", 0.00, 0.60, 2, function() return STATE.LockPredictionTime end, function(v)
+	STATE.LockPredictionTime = v
 end)
 addToggle(lockPage, "Авто-захват при ЛКМ / нажатии экрана", function() return STATE.LockOnFire end, function(v)
 	STATE.LockOnFire = v
@@ -1248,9 +1426,6 @@ addToggle(lockPage, "Луч захвата цели (Lock Beam)", function() ret
 	STATE.ShowLockBeam = v
 	if not v then clearLockBeam() end
 end)
-addActionButton(lockPage, "Часть наведения: Torso / Head", function()
-	STATE.LockTargetPart = (STATE.LockTargetPart == "HumanoidRootPart") and "Head" or "HumanoidRootPart"
-end)
 addSlider(lockPage, "Радиус поиска цели (px)", 80, 480, 0, function() return STATE.LockRadiusPx end, function(v)
 	STATE.LockRadiusPx = v
 	fovCircle.Size = UDim2.fromOffset(v * 2, v * 2)
@@ -1259,13 +1434,41 @@ addSlider(lockPage, "Плавность доводки камеры", 0.05, 1.0,
 	STATE.LockSmoothness = v
 end)
 
--- Вкладка 2: PLAYERS
+-- Вкладка 2: PLAYERS (с настройкой уменьшения информации и масштаба плашек)
+local function cycleDetailMode()
+	if STATE.EspDetailMode == "FULL" then
+		STATE.EspDetailMode = "COMPACT"
+	elseif STATE.EspDetailMode == "COMPACT" then
+		STATE.EspDetailMode = "MINIMAL"
+	else
+		STATE.EspDetailMode = "FULL"
+	end
+	refreshAllOverlayLayouts()
+	for _, cb in ipairs(uiRefreshCallbacks) do cb() end
+end
+
+local function getDetailButtonLabel(): string
+	if STATE.EspDetailMode == "FULL" then
+		return "📋 Информация: ПОЛНАЯ (Имя+HP+м)"
+	elseif STATE.EspDetailMode == "COMPACT" then
+		return "📋 Информация: КОМПАКТ (Имя+HP)"
+	else
+		return "📋 Информация: МИНИ (Только полоска)"
+	end
+end
+
 local playersPage = pages[2]
-addToggle(playersPage, "Оверлей и пунктирная рамка игроков", function() return STATE.PlayerOverlayEnabled end, function(v)
+addToggle(playersPage, "Оверлей и плашки игроков", function() return STATE.PlayerOverlayEnabled end, function(v)
 	STATE.PlayerOverlayEnabled = v
 	for _, data in pairs(playerOverlays) do
 		data.billboard.Enabled = v and data.isVisible
 	end
+end)
+addActionButton(playersPage, getDetailButtonLabel, cycleDetailMode)
+addSlider(playersPage, "Размер плашек ESP (масштаб)", 0.55, 1.30, 2, function() return STATE.EspScale end, function(v)
+	STATE.EspScale = v
+	refreshAllOverlayLayouts()
+	for _, cb in ipairs(uiRefreshCallbacks) do cb() end
 end)
 addToggle(playersPage, "Прерывистая 3D-линия до игроков", function() return STATE.PlayerDashedTracers end, function(v)
 	STATE.PlayerDashedTracers = v
@@ -1282,7 +1485,9 @@ end)
 addToggle(playersPage, "Партиклы (искры + аура энергии)", function() return STATE.ParticlesEnabled end, function(v)
 	STATE.ParticlesEnabled = v
 end)
-addActionButton(playersPage, "Переключить цвет линии: LIME / RED", function()
+addActionButton(playersPage, function()
+	return "🎨 Цвет пунктира: " .. STATE.DashedColorMode
+end, function()
 	STATE.DashedColorMode = (STATE.DashedColorMode == "LIME") and "RED" or "LIME"
 	applyDashedTheme()
 end)
@@ -1294,6 +1499,12 @@ addToggle(botsPage, "Включить ESP для ботов (NPC)", function() r
 	for _, data in pairs(botOverlays) do
 		data.billboard.Enabled = v and data.isVisible
 	end
+end)
+addActionButton(botsPage, getDetailButtonLabel, cycleDetailMode)
+addSlider(botsPage, "Размер плашек ESP (масштаб)", 0.55, 1.30, 2, function() return STATE.EspScale end, function(v)
+	STATE.EspScale = v
+	refreshAllOverlayLayouts()
+	for _, cb in ipairs(uiRefreshCallbacks) do cb() end
 end)
 addToggle(botsPage, "Неоновая обводка ботов (Chams)", function() return STATE.BotHighlight end, function(v)
 	STATE.BotHighlight = v
@@ -1310,7 +1521,7 @@ addSlider(botsPage, "Дистанция видимости ботов (studs)", 
 		data.billboard.MaxDistance = v
 	end
 end)
-addActionButton(botsPage, "🔄 Пересканировать ботов на карте", function()
+addActionButton(botsPage, function() return "🔄 Пересканировать ботов на карте" end, function()
 	scanWorkspaceBots()
 end)
 
@@ -1340,7 +1551,7 @@ addSlider(physPage, "Сила прыжка (JumpPower)", 50, 220, 0, function() 
 		hum.JumpPower = v
 	end
 end)
-addActionButton(physPage, "⚡ Телепорт к ближайшей цели", function()
+addActionButton(physPage, function() return "⚡ Телепорт к ближайшей цели" end, function()
 	local target = currentTarget or findClosestTarget()
 	local myRoot = localPlayer.Character and getCharacterRoot(localPlayer.Character)
 	local tRoot = target and getCharacterRoot(target)
@@ -1419,7 +1630,7 @@ closeBtn.MouseButton1Click:Connect(function()
 end)
 
 -- ============================================================================
--- 10. ИСПРАВЛЕННЫЙ ЦИКЛ LOCK-ON КАМЕРЫ + ФИЗИКА + РЕНДЕР
+-- 10. ЦИКЛ LOCK-ON КАМЕРЫ С УПРЕЖДЕНИЕМ + ФИЗИКА + РЕНДЕР
 -- ============================================================================
 local function onCameraStep(dt: number)
 	local activeCam = camera
@@ -1433,7 +1644,6 @@ local function onCameraStep(dt: number)
 		return
 	end
 
-	-- Проверяем текущую цель или ищем новую в радиусе FOV
 	local valid, targetPart = isValidTarget(currentTarget)
 	if not valid or not targetPart then
 		currentTarget = findClosestTarget()
@@ -1448,49 +1658,46 @@ local function onCameraStep(dt: number)
 		end
 	end
 
+	local predictedPos = getPredictedAimPosition(targetPart)
+	local zoneTag = (STATE.LockTargetPart == "Head") and "HEAD" or "BODY"
+
 	fovStroke.Color = COLORS.Red
-	lockStatusLabel.Text = "LOCKED: " .. (currentTarget and currentTarget.Name or "TARGET")
+	lockStatusLabel.Text = string.format("LOCKED: %s [%s]", currentTarget and currentTarget.Name or "TARGET", zoneTag)
 	lockStatusLabel.TextColor3 = COLORS.Red
-	updateLockBeam(targetPart)
+	updateLockBeam(targetPart, predictedPos)
 
 	if activeCam.CameraType ~= Enum.CameraType.Custom then
 		activeCam.CameraType = Enum.CameraType.Custom
 	end
 
-	-- Накопительное сглаживание вектора взгляда (не сбрасывается ClassicCamera!)
-	if not smoothedLookDir then
-		smoothedLookDir = activeCam.CFrame.LookVector
-	end
-
+	local curDir: Vector3 = smoothedLookDir or activeCam.CFrame.LookVector
 	local alpha = 1 - math.exp(-STATE.LockSmoothness * 45 * dt)
 	local focusPos = activeCam.Focus.Position
 	local zoomDist = (activeCam.CFrame.Position - focusPos).Magnitude
 
 	if zoomDist > 1.5 then
-		-- Вид от 3-го лица: орбитируем камеру вокруг фокуса персонажа так, чтобы прицел смотрел строго в цель
-		local toTarget = targetPart.Position - focusPos
+		local toTarget = predictedPos - focusPos
 		if toTarget.Magnitude > 0.01 then
-			local desiredDir = toTarget.Unit
-			local lerped = smoothedLookDir:Lerp(desiredDir, alpha)
+			local lerped = curDir:Lerp(toTarget.Unit, alpha)
 			if lerped.Magnitude > 0.001 then
-				smoothedLookDir = lerped.Unit
+				curDir = lerped.Unit
 			end
-			local newCamPos = focusPos - smoothedLookDir * zoomDist
-			activeCam.CFrame = CFrame.lookAt(newCamPos, newCamPos + smoothedLookDir)
+			local newCamPos = focusPos - curDir * zoomDist
+			activeCam.CFrame = CFrame.lookAt(newCamPos, newCamPos + curDir)
 		end
 	else
-		-- Вид от 1-го лица: поворачиваем камеру из её текущей позиции
 		local camPos = activeCam.CFrame.Position
-		local toTarget = targetPart.Position - camPos
+		local toTarget = predictedPos - camPos
 		if toTarget.Magnitude > 0.01 then
-			local desiredDir = toTarget.Unit
-			local lerped = smoothedLookDir:Lerp(desiredDir, alpha)
+			local lerped = curDir:Lerp(toTarget.Unit, alpha)
 			if lerped.Magnitude > 0.001 then
-				smoothedLookDir = lerped.Unit
+				curDir = lerped.Unit
 			end
-			activeCam.CFrame = CFrame.lookAt(camPos, camPos + smoothedLookDir)
+			activeCam.CFrame = CFrame.lookAt(camPos, camPos + curDir)
 		end
 	end
+
+	smoothedLookDir = curDir
 end
 
 local function onPhysicsStep()
@@ -1530,7 +1737,9 @@ local function updateOverlayList(list: { [any]: EntityOverlay }, camPos: Vector3
 			end
 
 			if wantOverlay then
-				data.distLabel.Text = string.format("%dm • %d HP", math.floor(dist * 0.28), math.ceil(data.humanoid.Health))
+				if STATE.EspDetailMode == "FULL" then
+					data.distLabel.Text = string.format("%dm • %d HP", math.floor(dist * 0.28), math.ceil(data.humanoid.Health))
+				end
 				if data.isLowHp and data.fadeReady and pulseWave then
 					data.glowStroke.Transparency = 0.08 + (pulseWave * 0.55)
 				end
@@ -1587,7 +1796,6 @@ UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: 
 
 	if not STATE.LockEnabled then return end
 
-	-- Активация по ПКМ или клавише E
 	if input.UserInputType == STATE.LockKey or (not gameProcessed and input.KeyCode == STATE.LockAltKey) then
 		if STATE.LockToggleMode then
 			setLockActive(not isLocking)
@@ -1597,7 +1805,6 @@ UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: 
 		return
 	end
 
-	-- Опциональный авто-захват при нажатии ЛКМ / экрана (вне кнопок UI)
 	if STATE.LockOnFire and not gameProcessed then
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			setLockActive(true)
@@ -1667,6 +1874,6 @@ Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
 	camera = Workspace.CurrentCamera
 end)
 
-RunService:BindToRenderStep("NeonLockOnV32", Enum.RenderPriority.Camera.Value + 1, onCameraStep)
+RunService:BindToRenderStep("NeonLockOnV34", Enum.RenderPriority.Camera.Value + 1, onCameraStep)
 RunService.Stepped:Connect(onPhysicsStep)
 RunService.RenderStepped:Connect(onRenderStepped)
