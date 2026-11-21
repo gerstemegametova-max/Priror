@@ -1,12 +1,10 @@
 --!strict
 --[[
-    NEON DEV & TRAINING SUITE v3.1 (Universal LocalScript)
-    Модули:
-    1. Neon Dashed UI (пунктирная рамка меню, переключатель Lime / Red, анимации).
-    2. Lock-On System (захват игроков и ботов, FOV-круг, плавная доводка).
-    3. Players Visuals (прерывистый 3D-луч до игроков, пунктирные рамки, Chams, частицы).
-    4. Bot / NPC ESP (автопоиск NPC в Workspace, оверлеи, подсветка, частицы).
-    5. Physics Lab (WalkSpeed, JumpPower, Air-Jump, Free-Fly, Noclip, Teleport).
+    NEON DEV & TRAINING SUITE v3.2 (Universal LocalScript)
+    Исправлено:
+    - Накопительное сглаживание Lock-On поверх ClassicCamera (работает в 1-м и 3-м лице).
+    - Кнопка быстрого захвата цели на экране (для Android/Touch и ПК) + ПКМ / E / ЛКМ.
+    - Поддержка любых ригов ботов (R15, R6, кастомные манекены).
 ]]
 
 -- ============================================================================
@@ -34,15 +32,17 @@ local STATE = {
 
 	-- Вкладка 1: Lock-On
 	LockEnabled = true,
-	LockToggleMode = false,
+	LockToggleMode = false,    -- Для клавиатуры/ПКМ: false = удержание, true = переключение
+	LockOnFire = false,        -- Авто-захват при зажатии ЛКМ / тапе по экрану
 	LockIncludeBots = true,
 	LockKey = Enum.UserInputType.MouseButton2,
 	LockAltKey = Enum.KeyCode.E,
-	LockRadiusPx = 220,
-	LockSmoothness = 0.22,
-	LockMaxDistance = 350,
-	LockTargetPart = "HumanoidRootPart",
+	LockRadiusPx = 240,
+	LockSmoothness = 0.28,
+	LockMaxDistance = 400,
+	LockTargetPart = "HumanoidRootPart", -- "HumanoidRootPart" или "Head"
 	ShowFovCircle = true,
+	ShowLockBeam = true,
 
 	-- Вкладка 2: Players
 	PlayerOverlayEnabled = true,
@@ -66,7 +66,6 @@ local STATE = {
 	NoclipEnabled = false,
 }
 
--- Цветовая палитра
 local COLORS = {
 	BgDark = Color3.fromRGB(12, 14, 20),
 	BgPanel = Color3.fromRGB(19, 23, 33),
@@ -86,12 +85,15 @@ local function getAccentColor(): Color3
 	return (STATE.DashedColorMode == "LIME") and COLORS.Lime or COLORS.Red
 end
 
--- Состояние захвата цели и кэш Noclip
+-- Состояние Lock-On и Noclip
 local isLocking = false
 local currentTarget: Model? = nil
+local smoothedLookDir: Vector3? = nil
+local lockBeam: Beam? = nil
+local lockAtt0: Attachment? = nil
+local lockAtt1: Attachment? = nil
 local noclipCachedParts: { [BasePart]: boolean } = {}
 
--- Единая структура данных оверлея
 type EntityOverlay = {
 	key: Instance,
 	displayName: string,
@@ -127,7 +129,7 @@ local playerConnections: { [Player]: RBXScriptConnection } = {}
 local uiRefreshCallbacks: { () -> () } = {}
 
 -- ============================================================================
--- 3. ГЕНЕРАТОР ПРЕРЫВИСТЫХ ЛИНИЙ И АНИМАЦИЙ
+-- 3. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (TWEEN, ПУНКТИР, ЧАСТИ ТЕЛА)
 -- ============================================================================
 local function quickTween(inst: Instance, duration: number, props: { [string]: any }, style: Enum.EasingStyle?)
 	local info = TweenInfo.new(duration, style or Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
@@ -183,7 +185,26 @@ local function getHealthColor(percent: number): Color3
 	end
 end
 
--- Управление включением/выключением Noclip с восстановлением коллизий
+-- Универсальный поиск опорной части тела для любых моделей (R15, R6, кастомные NPC)
+local function getCharacterRoot(character: Model): BasePart?
+	local root = character:FindFirstChild("HumanoidRootPart")
+		or character:FindFirstChild("Torso")
+		or character:FindFirstChild("UpperTorso")
+		or character.PrimaryPart
+		or character:FindFirstChildWhichIsA("BasePart")
+	return root :: BasePart?
+end
+
+local function getTargetAimPart(character: Model): BasePart?
+	if STATE.LockTargetPart == "Head" then
+		local head = character:FindFirstChild("Head")
+		if head and head:IsA("BasePart") then
+			return head
+		end
+	end
+	return getCharacterRoot(character)
+end
+
 local function disableNoclip()
 	STATE.NoclipEnabled = false
 	for part, wasCollidable in pairs(noclipCachedParts) do
@@ -195,7 +216,7 @@ local function disableNoclip()
 end
 
 -- ============================================================================
--- 4. УНИВЕРСАЛЬНЫЙ МОДУЛЬ ОВЕРЛЕЕВ (ИГРОКИ + БОТЫ + ПРЕРЫВИСТЫЕ ЛУЧИ + ЧАСТИЦЫ)
+-- 4. МОДУЛЬ ОВЕРЛЕЕВ (ИГРОКИ + БОТЫ + ПРЕРЫВИСТЫЕ ЛУЧИ + ЧАСТИЦЫ)
 -- ============================================================================
 local function destroyTracer(data: EntityOverlay)
 	if data.tracerBeam then data.tracerBeam:Destroy(); data.tracerBeam = nil end
@@ -210,7 +231,7 @@ local function ensurePlayerTracer(data: EntityOverlay)
 	end
 
 	local myChar = localPlayer.Character
-	local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart") :: BasePart?
+	local myRoot = myChar and getCharacterRoot(myChar)
 	if not myRoot then
 		destroyTracer(data)
 		return
@@ -220,15 +241,12 @@ local function ensurePlayerTracer(data: EntityOverlay)
 		destroyTracer(data)
 
 		local att0 = Instance.new("Attachment")
-		att0.Name = "TracerOrigin"
 		att0.Parent = myRoot
 
 		local att1 = Instance.new("Attachment")
-		att1.Name = "TracerTarget"
 		att1.Parent = data.rootPart
 
 		local beam = Instance.new("Beam")
-		beam.Name = "DashedPlayerLine"
 		beam.Attachment0 = att0
 		beam.Attachment1 = att1
 		beam.Width0 = 0.14
@@ -264,10 +282,7 @@ local function syncEntityOverlay(data: EntityOverlay)
 
 	if currentHp < data.lastHealth then
 		if data.isVisible then
-			if data.isBot and STATE.BotParticles then
-				data.sparkEmitter:Emit(7)
-				data.auraEmitter:Emit(5)
-			elseif not data.isBot and STATE.ParticlesEnabled then
+			if (data.isBot and STATE.BotParticles) or (not data.isBot and STATE.ParticlesEnabled) then
 				data.sparkEmitter:Emit(7)
 				data.auraEmitter:Emit(5)
 			end
@@ -296,7 +311,6 @@ local function syncEntityOverlay(data: EntityOverlay)
 	data.boxStroke.Color = data.isBot and COLORS.Purple or accentColor
 	data.highlight.OutlineColor = data.isBot and hpColor or accentColor
 	data.highlight.FillColor = hpColor
-
 	data.sparkEmitter.Color = ColorSequence.new(accentColor, Color3.new(1, 1, 1))
 	data.auraEmitter.Color = ColorSequence.new(hpColor, accentColor)
 end
@@ -332,17 +346,17 @@ local function createEntityOverlay(character: Model, displayName: string, isBot:
 		removeEntityOverlay(playerOverlays[playerKey])
 	end
 
-	local humanoid = character:WaitForChild("Humanoid", 4) :: Humanoid?
-	local head = (character:FindFirstChild("Head") or character:WaitForChild("Head", 3)) :: BasePart?
-	local rootPart = (character:FindFirstChild("HumanoidRootPart") or character:WaitForChild("HumanoidRootPart", 3)) :: BasePart?
+	local humanoid = character:FindFirstChildOfClass("Humanoid") or character:WaitForChild("Humanoid", 4) :: Humanoid?
+	if not humanoid or humanoid.Health <= 0 then return end
 
-	if not humanoid or not head or not rootPart or humanoid.Health <= 0 then return end
+	local rootPart = getCharacterRoot(character)
+	local head = (character:FindFirstChild("Head") :: BasePart?) or rootPart
+	if not rootPart or not head then return end
 	if playerKey and playerKey.Character ~= character then return end
 
 	local accentColor = getAccentColor()
 	local isEnabled = isBot and STATE.BotEspEnabled or STATE.PlayerOverlayEnabled
 
-	-- 1. BillboardGui с прерывистой рамкой
 	local billboard = Instance.new("BillboardGui")
 	billboard.Name = isBot and "BotEspOverlay" or "PlayerEspOverlay"
 	billboard.Adornee = head
@@ -434,7 +448,6 @@ local function createEntityOverlay(character: Model, displayName: string, isBot:
 
 	billboard.Parent = head
 
-	-- 2. Highlight Chams
 	local highlight = Instance.new("Highlight")
 	highlight.Name = isBot and "BotHighlight" or "PlayerHighlight"
 	highlight.Adornee = character
@@ -446,7 +459,6 @@ local function createEntityOverlay(character: Model, displayName: string, isBot:
 	highlight.Enabled = isBot and STATE.BotHighlight or STATE.PlayerHighlight
 	highlight.Parent = character
 
-	-- 3. Частицы Тип 1: Звёздочки-искры над головой
 	local headAtt = Instance.new("Attachment")
 	headAtt.Position = Vector3.new(0, 1.35, 0)
 	headAtt.Parent = head
@@ -474,7 +486,6 @@ local function createEntityOverlay(character: Model, displayName: string, isBot:
 	sparkEmitter.LightInfluence = 0
 	sparkEmitter.Parent = headAtt
 
-	-- 4. Частицы Тип 2: Восходящая энергетическая аура вокруг тела
 	local bodyAtt = Instance.new("Attachment")
 	bodyAtt.Position = Vector3.new(0, -1.8, 0)
 	bodyAtt.Parent = rootPart
@@ -566,6 +577,7 @@ local function tryRegisterBot(inst: Instance)
 	task.defer(function()
 		local model = inst.Parent
 		if not model or not model:IsA("Model") or not model.Parent then return end
+		if model == localPlayer.Character then return end
 		if Players:GetPlayerFromCharacter(model) ~= nil then return end
 		if inst.Health <= 0 then return end
 		createEntityOverlay(model, model.Name, true, nil)
@@ -583,12 +595,59 @@ end
 Workspace.DescendantAdded:Connect(tryRegisterBot)
 
 -- ============================================================================
--- 6. МОДУЛЬ LOCK-ON (ПОИСК ЦЕЛИ СРЕДИ ИГРОКОВ И БОТОВ)
+-- 6. МОДУЛЬ LOCK-ON (ПОИСК ЦЕЛИ + ЛУЧ ЗАХВАТА)
 -- ============================================================================
+local function clearLockBeam()
+	if lockBeam then lockBeam:Destroy(); lockBeam = nil end
+	if lockAtt0 then lockAtt0:Destroy(); lockAtt0 = nil end
+	if lockAtt1 then lockAtt1:Destroy(); lockAtt1 = nil end
+end
+
+local function updateLockBeam(targetPart: BasePart?)
+	if not STATE.ShowLockBeam or not isLocking or not targetPart then
+		clearLockBeam()
+		return
+	end
+
+	local myChar = localPlayer.Character
+	local myRoot = myChar and getCharacterRoot(myChar)
+	if not myRoot then
+		clearLockBeam()
+		return
+	end
+
+	if not lockBeam or not lockAtt0 or lockAtt0.Parent ~= myRoot or not lockAtt1 or lockAtt1.Parent ~= targetPart then
+		clearLockBeam()
+		local att0 = Instance.new("Attachment")
+		att0.Parent = myRoot
+
+		local att1 = Instance.new("Attachment")
+		att1.Parent = targetPart
+
+		local beam = Instance.new("Beam")
+		beam.Attachment0 = att0
+		beam.Attachment1 = att1
+		beam.Width0 = 0.18
+		beam.Width1 = 0.08
+		beam.FaceCamera = true
+		beam.LightEmission = 1
+		beam.LightInfluence = 0
+		beam.Color = ColorSequence.new(COLORS.Cyan, COLORS.Red)
+		beam.Transparency = NumberSequence.new(0.15)
+		beam.Parent = myRoot
+
+		lockAtt0 = att0
+		lockAtt1 = att1
+		lockBeam = beam
+	end
+end
+
 local function isValidTarget(character: Model?): (boolean, BasePart?)
-	if not character or not character.Parent then return false, nil end
+	if not character or not character.Parent or character == localPlayer.Character then
+		return false, nil
+	end
 	local hum = character:FindFirstChildOfClass("Humanoid")
-	local targetPart = (character:FindFirstChild(STATE.LockTargetPart) or character:FindFirstChild("HumanoidRootPart")) :: BasePart?
+	local targetPart = getTargetAimPart(character)
 	if not hum or hum.Health <= 0 or not targetPart then
 		return false, nil
 	end
@@ -633,16 +692,24 @@ local function findClosestTarget(): Model?
 		for botModel, _ in pairs(botOverlays) do
 			evaluateCandidate(botModel)
 		end
+		-- На случай, если бот заспавнился, но ещё не успел попасть в botOverlays
+		for _, desc in ipairs(Workspace:GetDescendants()) do
+			if desc:IsA("Humanoid") and desc.Parent and desc.Parent:IsA("Model") then
+				if Players:GetPlayerFromCharacter(desc.Parent) == nil then
+					evaluateCandidate(desc.Parent)
+				end
+			end
+		end
 	end
 
 	return bestTarget
 end
 
 -- ============================================================================
--- 7. ПОСТРОЕНИЕ АНИМИРОВАННОГО НЕОНОВОГО МЕНЮ С ПРЕРЫВИСТОЙ РАМКОЙ
+-- 7. ПОСТРОЕНИЕ АНИМИРОВАННОГО НЕОНОВОГО МЕНЮ + КНОПКА LOCK-ON НА ЭКРАН
 -- ============================================================================
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "NeonDevSuiteV3"
+screenGui.Name = "NeonDevSuiteV32"
 screenGui.ResetOnSpawn = false
 screenGui.IgnoreGuiInset = true
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
@@ -662,12 +729,25 @@ fovCorner.CornerRadius = UDim.new(1, 0)
 fovCorner.Parent = fovCircle
 
 local fovStroke, _ = attachDashedStroke(fovCircle, 1.8, getAccentColor())
-fovStroke.Transparency = 0.35
+fovStroke.Transparency = 0.3
 
--- Плавающая кнопка-пилюля с прерывистой рамкой
+-- Подпись статуса захвата под кругом FOV
+local lockStatusLabel = Instance.new("TextLabel")
+lockStatusLabel.Size = UDim2.fromOffset(220, 22)
+lockStatusLabel.AnchorPoint = Vector2.new(0.5, 0)
+lockStatusLabel.Position = UDim2.new(0.5, 0, 1, 6)
+lockStatusLabel.BackgroundTransparency = 1
+lockStatusLabel.Text = ""
+lockStatusLabel.TextColor3 = COLORS.Red
+lockStatusLabel.TextStrokeTransparency = 0.35
+lockStatusLabel.Font = Enum.Font.GothamBlack
+lockStatusLabel.TextSize = 12
+lockStatusLabel.Parent = fovCircle
+
+-- Плавающая кнопка открытия меню
 local openPill = Instance.new("TextButton")
 openPill.Size = UDim2.fromOffset(142, 38)
-openPill.Position = UDim2.new(0, 18, 0.5, -19)
+openPill.Position = UDim2.new(0, 18, 0.5, -42)
 openPill.BackgroundColor3 = COLORS.BgDark
 openPill.BackgroundTransparency = 0.1
 openPill.Text = "⚡ DEV SUITE"
@@ -682,6 +762,50 @@ pillCorner.CornerRadius = UDim.new(1, 0)
 pillCorner.Parent = openPill
 
 local pillStroke, pillGrad = attachDashedStroke(openPill, 2.2, getAccentColor())
+
+-- Плавающая кнопка быстрого переключения Lock-On (работает на Android/Touch и ПК!)
+local lockPill = Instance.new("TextButton")
+lockPill.Size = UDim2.fromOffset(142, 38)
+lockPill.Position = UDim2.new(0, 18, 0.5, 6)
+lockPill.BackgroundColor3 = COLORS.BgDark
+lockPill.BackgroundTransparency = 0.1
+lockPill.Text = "🎯 LOCK: OFF"
+lockPill.TextColor3 = COLORS.TextDim
+lockPill.Font = Enum.Font.GothamBlack
+lockPill.TextSize = 12
+lockPill.AutoButtonColor = false
+lockPill.Parent = screenGui
+
+local lockPillCorner = Instance.new("UICorner")
+lockPillCorner.CornerRadius = UDim.new(1, 0)
+lockPillCorner.Parent = lockPill
+
+local lockPillStroke = Instance.new("UIStroke")
+lockPillStroke.Thickness = 2.0
+lockPillStroke.Color = COLORS.TextDim
+lockPillStroke.Parent = lockPill
+
+local function setLockActive(active: boolean)
+	if not STATE.LockEnabled then
+		active = false
+	end
+	isLocking = active
+	if active then
+		currentTarget = findClosestTarget()
+		smoothedLookDir = nil
+		lockPill.Text = "🎯 LOCK: ON"
+		lockPill.TextColor3 = getAccentColor()
+		lockPillStroke.Color = getAccentColor()
+	else
+		currentTarget = nil
+		smoothedLookDir = nil
+		clearLockBeam()
+		lockStatusLabel.Text = ""
+		lockPill.Text = "🎯 LOCK: OFF"
+		lockPill.TextColor3 = COLORS.TextDim
+		lockPillStroke.Color = COLORS.TextDim
+	end
+end
 
 -- Главное окно меню
 local mainFrame = Instance.new("Frame")
@@ -702,7 +826,6 @@ local uiScale = Instance.new("UIScale")
 uiScale.Scale = 0.88
 uiScale.Parent = mainFrame
 
--- Шапка окна
 local header = Instance.new("Frame")
 header.Size = UDim2.new(1, 0, 0, 44)
 header.BackgroundColor3 = COLORS.BgPanel
@@ -717,7 +840,7 @@ local titleLabel = Instance.new("TextLabel")
 titleLabel.Size = UDim2.new(1, -145, 1, 0)
 titleLabel.Position = UDim2.fromOffset(14, 0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = "⚡ NEON SUITE // v3.1"
+titleLabel.Text = "⚡ NEON SUITE // v3.2"
 titleLabel.TextColor3 = COLORS.TextMain
 titleLabel.Font = Enum.Font.GothamBlack
 titleLabel.TextSize = 13
@@ -757,7 +880,6 @@ local closeCorner = Instance.new("UICorner")
 closeCorner.CornerRadius = UDim.new(0, 7)
 closeCorner.Parent = closeBtn
 
--- Панель 4 вкладок
 local tabBar = Instance.new("Frame")
 tabBar.Size = UDim2.new(1, -24, 0, 34)
 tabBar.Position = UDim2.fromOffset(12, 52)
@@ -863,6 +985,11 @@ local function applyDashedTheme()
 	tabIndicator.BackgroundColor3 = accent
 	indStroke.Color = accent
 	tabButtons[activeTabIndex].TextColor3 = accent
+
+	if isLocking then
+		lockPill.TextColor3 = accent
+		lockPillStroke.Color = accent
+	end
 
 	for _, page in ipairs(pages) do
 		page.ScrollBarImageColor3 = accent
@@ -1098,22 +1225,28 @@ end
 -- ============================================================================
 -- Вкладка 1: LOCK-ON
 local lockPage = pages[1]
-addToggle(lockPage, "Активировать Lock-On камеры", function() return STATE.LockEnabled end, function(v)
+addToggle(lockPage, "Активировать систему Lock-On", function() return STATE.LockEnabled end, function(v)
 	STATE.LockEnabled = v
 	fovCircle.Visible = v and STATE.ShowFovCircle
-	if not v then isLocking = false; currentTarget = nil end
+	if not v then setLockActive(false) end
+end)
+addToggle(lockPage, "Авто-захват при ЛКМ / нажатии экрана", function() return STATE.LockOnFire end, function(v)
+	STATE.LockOnFire = v
 end)
 addToggle(lockPage, "Захват ботов и манекенов (NPC)", function() return STATE.LockIncludeBots end, function(v)
 	STATE.LockIncludeBots = v
 end)
-addToggle(lockPage, "Режим Toggle (нажал — держит)", function() return STATE.LockToggleMode end, function(v)
+addToggle(lockPage, "Режим Toggle для ПКМ / E", function() return STATE.LockToggleMode end, function(v)
 	STATE.LockToggleMode = v
-	isLocking = false
-	currentTarget = nil
+	setLockActive(false)
 end)
 addToggle(lockPage, "Показывать пунктирный круг FOV", function() return STATE.ShowFovCircle end, function(v)
 	STATE.ShowFovCircle = v
 	fovCircle.Visible = STATE.LockEnabled and v
+end)
+addToggle(lockPage, "Луч захвата цели (Lock Beam)", function() return STATE.ShowLockBeam end, function(v)
+	STATE.ShowLockBeam = v
+	if not v then clearLockBeam() end
 end)
 addActionButton(lockPage, "Часть наведения: Torso / Head", function()
 	STATE.LockTargetPart = (STATE.LockTargetPart == "HumanoidRootPart") and "Head" or "HumanoidRootPart"
@@ -1122,7 +1255,7 @@ addSlider(lockPage, "Радиус поиска цели (px)", 80, 480, 0, funct
 	STATE.LockRadiusPx = v
 	fovCircle.Size = UDim2.fromOffset(v * 2, v * 2)
 end)
-addSlider(lockPage, "Плавность доводки камеры", 0.05, 0.85, 2, function() return STATE.LockSmoothness end, function(v)
+addSlider(lockPage, "Плавность доводки камеры", 0.05, 1.0, 2, function() return STATE.LockSmoothness end, function(v)
 	STATE.LockSmoothness = v
 end)
 
@@ -1181,14 +1314,10 @@ addActionButton(botsPage, "🔄 Пересканировать ботов на �
 	scanWorkspaceBots()
 end)
 
--- Вкладка 4: PHYSICS LAB (включая Noclip)
+-- Вкладка 4: PHYSICS LAB
 local physPage = pages[4]
 addToggle(physPage, "Noclip (проход сквозь стены)", function() return STATE.NoclipEnabled end, function(v)
-	if v then
-		STATE.NoclipEnabled = true
-	else
-		disableNoclip()
-	end
+	if v then STATE.NoclipEnabled = true else disableNoclip() end
 end)
 addToggle(physPage, "Free-Fly (полёт по камере)", function() return STATE.FlyEnabled end, function(v)
 	STATE.FlyEnabled = v
@@ -1213,15 +1342,15 @@ addSlider(physPage, "Сила прыжка (JumpPower)", 50, 220, 0, function() 
 end)
 addActionButton(physPage, "⚡ Телепорт к ближайшей цели", function()
 	local target = currentTarget or findClosestTarget()
-	local myRoot = localPlayer.Character and localPlayer.Character:FindFirstChild("HumanoidRootPart") :: BasePart?
-	local tRoot = target and target:FindFirstChild("HumanoidRootPart") :: BasePart?
+	local myRoot = localPlayer.Character and getCharacterRoot(localPlayer.Character)
+	local tRoot = target and getCharacterRoot(target)
 	if myRoot and tRoot then
 		myRoot.CFrame = tRoot.CFrame * CFrame.new(0, 0, 4)
 	end
 end)
 
 -- ============================================================================
--- 9. АНИМАЦИЯ ОТКРЫТИЯ И ПЕРЕТАСКИВАНИЕ ОКНА (MOUSE + TOUCH)
+-- 9. АНИМАЦИЯ ОТКРЫТИЯ И ПЕРЕТАСКИВАНИЕ (MOUSE + TOUCH)
 -- ============================================================================
 local function setMenuVisible(visible: boolean)
 	STATE.MenuOpen = visible
@@ -1239,14 +1368,16 @@ local function setMenuVisible(visible: boolean)
 	end
 end
 
-local function makeDraggable(dragHandle: GuiObject, moveTarget: GuiObject)
+local function makeDraggable(dragHandle: GuiObject, moveTarget: GuiObject, onTap: (() -> ())?)
 	local dragging = false
+	local moved = false
 	local dragStart = Vector3.zero
 	local startPos = UDim2.new()
 
 	dragHandle.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			dragging = true
+			moved = false
 			dragStart = input.Position
 			startPos = moveTarget.Position
 		end
@@ -1255,6 +1386,9 @@ local function makeDraggable(dragHandle: GuiObject, moveTarget: GuiObject)
 	UserInputService.InputChanged:Connect(function(input)
 		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
 			local delta = input.Position - dragStart
+			if delta.Magnitude > 6 then
+				moved = true
+			end
 			moveTarget.Position = UDim2.new(
 				startPos.X.Scale, startPos.X.Offset + delta.X,
 				startPos.Y.Scale, startPos.Y.Offset + delta.Y
@@ -1264,23 +1398,28 @@ local function makeDraggable(dragHandle: GuiObject, moveTarget: GuiObject)
 
 	UserInputService.InputEnded:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			if dragging and not moved and onTap then
+				onTap()
+			end
 			dragging = false
 		end
 	end)
 end
 
-makeDraggable(header, mainFrame)
-makeDraggable(openPill, openPill)
-
-openPill.MouseButton1Click:Connect(function()
+makeDraggable(header, mainFrame, nil)
+makeDraggable(openPill, openPill, function()
 	setMenuVisible(not STATE.MenuOpen)
 end)
+makeDraggable(lockPill, lockPill, function()
+	setLockActive(not isLocking)
+end)
+
 closeBtn.MouseButton1Click:Connect(function()
 	setMenuVisible(false)
 end)
 
 -- ============================================================================
--- 10. ЦИКЛЫ ОБНОВЛЕНИЯ КАМЕРЫ, ОВЕРЛЕЕВ И ФИЗИКИ (ВКЛЮЧАЯ NOCLIP)
+-- 10. ИСПРАВЛЕННЫЙ ЦИКЛ LOCK-ON КАМЕРЫ + ФИЗИКА + РЕНДЕР
 -- ============================================================================
 local function onCameraStep(dt: number)
 	local activeCam = camera
@@ -1288,32 +1427,72 @@ local function onCameraStep(dt: number)
 
 	if not STATE.LockEnabled or not isLocking then
 		fovStroke.Color = getAccentColor()
+		lockStatusLabel.Text = ""
+		clearLockBeam()
+		smoothedLookDir = nil
 		return
 	end
 
+	-- Проверяем текущую цель или ищем новую в радиусе FOV
 	local valid, targetPart = isValidTarget(currentTarget)
 	if not valid or not targetPart then
 		currentTarget = findClosestTarget()
 		valid, targetPart = isValidTarget(currentTarget)
 		if not valid or not targetPart then
 			fovStroke.Color = getAccentColor()
+			lockStatusLabel.Text = "SEARCHING..."
+			lockStatusLabel.TextColor3 = getAccentColor()
+			clearLockBeam()
+			smoothedLookDir = nil
 			return
 		end
 	end
 
-	fovStroke.Color = (STATE.DashedColorMode == "LIME") and COLORS.Red or COLORS.Lime
+	fovStroke.Color = COLORS.Red
+	lockStatusLabel.Text = "LOCKED: " .. (currentTarget and currentTarget.Name or "TARGET")
+	lockStatusLabel.TextColor3 = COLORS.Red
+	updateLockBeam(targetPart)
 
 	if activeCam.CameraType ~= Enum.CameraType.Custom then
 		activeCam.CameraType = Enum.CameraType.Custom
 	end
 
-	local camPos = activeCam.CFrame.Position
-	local goalCFrame = CFrame.lookAt(camPos, targetPart.Position)
-	local alpha = 1 - math.exp(-STATE.LockSmoothness * 60 * dt)
-	activeCam.CFrame = activeCam.CFrame:Lerp(goalCFrame, alpha)
+	-- Накопительное сглаживание вектора взгляда (не сбрасывается ClassicCamera!)
+	if not smoothedLookDir then
+		smoothedLookDir = activeCam.CFrame.LookVector
+	end
+
+	local alpha = 1 - math.exp(-STATE.LockSmoothness * 45 * dt)
+	local focusPos = activeCam.Focus.Position
+	local zoomDist = (activeCam.CFrame.Position - focusPos).Magnitude
+
+	if zoomDist > 1.5 then
+		-- Вид от 3-го лица: орбитируем камеру вокруг фокуса персонажа так, чтобы прицел смотрел строго в цель
+		local toTarget = targetPart.Position - focusPos
+		if toTarget.Magnitude > 0.01 then
+			local desiredDir = toTarget.Unit
+			local lerped = smoothedLookDir:Lerp(desiredDir, alpha)
+			if lerped.Magnitude > 0.001 then
+				smoothedLookDir = lerped.Unit
+			end
+			local newCamPos = focusPos - smoothedLookDir * zoomDist
+			activeCam.CFrame = CFrame.lookAt(newCamPos, newCamPos + smoothedLookDir)
+		end
+	else
+		-- Вид от 1-го лица: поворачиваем камеру из её текущей позиции
+		local camPos = activeCam.CFrame.Position
+		local toTarget = targetPart.Position - camPos
+		if toTarget.Magnitude > 0.01 then
+			local desiredDir = toTarget.Unit
+			local lerped = smoothedLookDir:Lerp(desiredDir, alpha)
+			if lerped.Magnitude > 0.001 then
+				smoothedLookDir = lerped.Unit
+			end
+			activeCam.CFrame = CFrame.lookAt(camPos, camPos + smoothedLookDir)
+		end
+	end
 end
 
--- Физический шаг Stepped: отключаем коллизии персонажа до расчёта физики
 local function onPhysicsStep()
 	if not STATE.NoclipEnabled then return end
 	local char = localPlayer.Character
@@ -1373,10 +1552,9 @@ local function onRenderStepped(dt: number)
 	if not activeCam then return end
 	local camPos = activeCam.CFrame.Position
 
-	-- Free-Fly
 	if STATE.FlyEnabled then
 		local char = localPlayer.Character
-		local root = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
+		local root = char and getCharacterRoot(char)
 		local hum = char and char:FindFirstChildOfClass("Humanoid")
 		if root and hum then
 			hum.PlatformStand = true
@@ -1385,7 +1563,8 @@ local function onRenderStepped(dt: number)
 			if moveDir.Magnitude > 0.05 then
 				local camLook = activeCam.CFrame.LookVector
 				local camRight = activeCam.CFrame.RightVector
-				local flatLook = Vector3.new(camLook.X, 0, camLook.Z).Unit
+				local horiz = Vector3.new(camLook.X, 0, camLook.Z)
+				local flatLook = (horiz.Magnitude > 0.01) and horiz.Unit or Vector3.new(0, 0, -1)
 				flyVel = (camLook * moveDir:Dot(flatLook) + camRight * moveDir:Dot(camRight)) * STATE.FlySpeed
 			end
 			root.AssemblyLinearVelocity = flyVel
@@ -1406,15 +1585,22 @@ UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: 
 		return
 	end
 
-	if STATE.LockEnabled then
-		if input.UserInputType == STATE.LockKey or (not gameProcessed and input.KeyCode == STATE.LockAltKey) then
-			if STATE.LockToggleMode then
-				isLocking = not isLocking
-				currentTarget = isLocking and findClosestTarget() or nil
-			else
-				isLocking = true
-				currentTarget = findClosestTarget()
-			end
+	if not STATE.LockEnabled then return end
+
+	-- Активация по ПКМ или клавише E
+	if input.UserInputType == STATE.LockKey or (not gameProcessed and input.KeyCode == STATE.LockAltKey) then
+		if STATE.LockToggleMode then
+			setLockActive(not isLocking)
+		else
+			setLockActive(true)
+		end
+		return
+	end
+
+	-- Опциональный авто-захват при нажатии ЛКМ / экрана (вне кнопок UI)
+	if STATE.LockOnFire and not gameProcessed then
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			setLockActive(true)
 		end
 	end
 end)
@@ -1422,8 +1608,13 @@ end)
 UserInputService.InputEnded:Connect(function(input: InputObject)
 	if not STATE.LockToggleMode then
 		if input.UserInputType == STATE.LockKey or input.KeyCode == STATE.LockAltKey then
-			isLocking = false
-			currentTarget = nil
+			setLockActive(false)
+		end
+	end
+
+	if STATE.LockOnFire then
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			setLockActive(false)
 		end
 	end
 end)
@@ -1476,6 +1667,6 @@ Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
 	camera = Workspace.CurrentCamera
 end)
 
-RunService:BindToRenderStep("NeonLockOnV3", Enum.RenderPriority.Camera.Value + 1, onCameraStep)
+RunService:BindToRenderStep("NeonLockOnV32", Enum.RenderPriority.Camera.Value + 1, onCameraStep)
 RunService.Stepped:Connect(onPhysicsStep)
 RunService.RenderStepped:Connect(onRenderStepped)
