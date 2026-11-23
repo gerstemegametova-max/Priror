@@ -1,12 +1,16 @@
--- Единый LocalScript в StarterPlayerScripts
+-- Единый LocalScript (поместить в StarterPlayer -> StarterPlayerScripts)
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 
 local localPlayer = Players.LocalPlayer
+if not localPlayer then
+	Players:GetPropertyChangedSignal("LocalPlayer"):Wait()
+	localPlayer = Players.LocalPlayer
+end
+
 local playerGui = localPlayer:WaitForChild("PlayerGui")
 local camera = workspace.CurrentCamera
-local targetsFolder = workspace:WaitForChild("Targets")
 
 -- ==========================================
 -- НАСТРОЙКИ И СОСТОЯНИЕ
@@ -31,7 +35,7 @@ local State = {
 	UILocked = false,
 }
 
-local Connections = {} -- Все глобальные слушатели для чистой выгрузки
+local Connections = {}   -- Все глобальные слушатели для чистой выгрузки
 local TrackedModels = {} -- [Model] = { billboard = BillboardGui, isPlayer = bool, conns = {} }
 local lockedTarget = nil
 
@@ -128,11 +132,13 @@ local function makeDraggable(guiObject, dragHandle)
 	local dragInput = nil
 	local dragStart = nil
 	local startPos = nil
+	local wasDragged = false
 
 	trackConn(dragHandle.InputBegan:Connect(function(input)
 		if State.UILocked then return end
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			dragging = true
+			wasDragged = false
 			dragInput = input
 			dragStart = input.Position
 			startPos = guiObject.Position
@@ -142,6 +148,9 @@ local function makeDraggable(guiObject, dragHandle)
 	trackConn(UserInputService.InputChanged:Connect(function(input)
 		if dragging and input == dragInput and not State.UILocked then
 			local delta = input.Position - dragStart
+			if delta.Magnitude > 5 then
+				wasDragged = true
+			end
 			guiObject.Position = UDim2.new(
 				startPos.X.Scale,
 				startPos.X.Offset + delta.X,
@@ -157,6 +166,10 @@ local function makeDraggable(guiObject, dragHandle)
 			dragInput = nil
 		end
 	end))
+
+	return function()
+		return wasDragged
+	end
 end
 
 -- ==========================================
@@ -170,8 +183,8 @@ screenGui.Parent = playerGui
 
 local mainFrame = Instance.new("Frame")
 mainFrame.Name = "MainMenu"
-mainFrame.Size = UDim2.new(0, 210, 0, 273)
-mainFrame.Position = UDim2.new(0, 20, 0.5, -136)
+mainFrame.Size = UDim2.new(0, 210, 0, 276)
+mainFrame.Position = UDim2.new(0, 20, 0.5, -138)
 mainFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
 mainFrame.BorderSizePixel = 0
 mainFrame.Parent = screenGui
@@ -185,9 +198,10 @@ uiStroke.Color = Color3.fromRGB(55, 55, 65)
 uiStroke.Thickness = 1
 uiStroke.Parent = mainFrame
 
+-- Шапка окна (фиксирована сверху)
 local header = Instance.new("TextLabel")
-header.LayoutOrder = 0
 header.Size = UDim2.new(1, 0, 0, 32)
+header.Position = UDim2.new(0, 0, 0, 0)
 header.BackgroundColor3 = Color3.fromRGB(28, 28, 35)
 header.Text = "  DEBUG PANEL"
 header.TextColor3 = Color3.fromRGB(235, 235, 245)
@@ -200,15 +214,18 @@ local headerCorner = Instance.new("UICorner")
 headerCorner.CornerRadius = UDim.new(0, 8)
 headerCorner.Parent = header
 
+-- Отдельный контейнер для кнопок под шапкой
+local buttonsContainer = Instance.new("Frame")
+buttonsContainer.Size = UDim2.new(1, 0, 1, -38)
+buttonsContainer.Position = UDim2.new(0, 0, 0, 38)
+buttonsContainer.BackgroundTransparency = 1
+buttonsContainer.Parent = mainFrame
+
 local listLayout = Instance.new("UIListLayout")
 listLayout.Padding = UDim.new(0, 6)
 listLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
 listLayout.SortOrder = Enum.SortOrder.LayoutOrder
-listLayout.Parent = mainFrame
-
-local padding = Instance.new("UIPadding")
-padding.PaddingTop = UDim.new(0, 38)
-padding.Parent = mainFrame
+listLayout.Parent = buttonsContainer
 
 local function createToggleBtn(order, text, defaultState, callback)
 	local btn = Instance.new("TextButton")
@@ -217,7 +234,7 @@ local function createToggleBtn(order, text, defaultState, callback)
 	btn.Font = Enum.Font.GothamSemibold
 	btn.TextSize = 12
 	btn.AutoButtonColor = false
-	btn.Parent = mainFrame
+	btn.Parent = buttonsContainer
 
 	local corner = Instance.new("UICorner")
 	corner.CornerRadius = UDim.new(0, 6)
@@ -264,7 +281,7 @@ aimStroke.Thickness = 2
 aimStroke.Parent = aimBtn
 
 makeDraggable(mainFrame, header)
-makeDraggable(aimBtn, aimBtn)
+local wasAimBtnDragged = makeDraggable(aimBtn, aimBtn)
 
 -- ==========================================
 -- ОТСЛЕЖИВАНИЕ МОДЕЛЕЙ (ESP + ЦИФРЫ УРОНА)
@@ -290,14 +307,19 @@ local function cleanupModel(model)
 end
 
 local function registerModel(model, isPlayer)
-	if not State.ScriptActive or not model or TrackedModels[model] then return end
+	if not State.ScriptActive or not model or not model:IsA("Model") or TrackedModels[model] then return end
 	if isPlayer and model == localPlayer.Character then return end
 
-	local head = model:WaitForChild("Head", 5)
-	local humanoid = model:WaitForChild("Humanoid", 5)
-	if not head or not humanoid or not State.ScriptActive then return end
+	local head = model:FindFirstChild("Head") or model:WaitForChild("Head", 3)
+	local humanoid = model:FindFirstChildOfClass("Humanoid") or model:WaitForChild("Humanoid", 3)
+	if not head or not humanoid or not State.ScriptActive or TrackedModels[model] then return end
 
-	-- Создаем ESP HP Bar
+	-- Если модель принадлежит реальному игроку, помечаем как игрока
+	if Players:GetPlayerFromCharacter(model) then
+		isPlayer = true
+		if model == localPlayer.Character then return end
+	end
+
 	local billboard = Instance.new("BillboardGui")
 	billboard.Name = "DebugESP"
 	billboard.Adornee = head
@@ -385,15 +407,37 @@ local function registerModel(model, isPlayer)
 	}
 end
 
--- Инициализация ботов
-for _, npc in ipairs(targetsFolder:GetChildren()) do
-	task.spawn(registerModel, npc, false)
+-- Поиск NPC без блокировки потока (работает и с папкой Targets, и без неё)
+local function watchTargetsFolder(folder)
+	for _, npc in ipairs(folder:GetChildren()) do
+		task.spawn(registerModel, npc, false)
+	end
+	trackConn(folder.ChildAdded:Connect(function(npc)
+		task.spawn(registerModel, npc, false)
+	end))
 end
-trackConn(targetsFolder.ChildAdded:Connect(function(npc)
-	task.spawn(registerModel, npc, false)
+
+local existingTargets = workspace:FindFirstChild("Targets")
+if existingTargets then
+	watchTargetsFolder(existingTargets)
+end
+
+-- Также сканируем модели прямо в workspace (на случай если папки Targets нет)
+for _, obj in ipairs(workspace:GetChildren()) do
+	if obj:IsA("Model") and obj:FindFirstChildOfClass("Humanoid") then
+		task.spawn(registerModel, obj, false)
+	end
+end
+
+trackConn(workspace.ChildAdded:Connect(function(child)
+	if child.Name == "Targets" and child:IsA("Folder") then
+		watchTargetsFolder(child)
+	elseif child:IsA("Model") then
+		task.spawn(registerModel, child, false)
+	end
 end))
 
--- Инициализация игроков
+-- Инициализация других игроков
 local function setupPlayer(plr)
 	if plr == localPlayer then return end
 	if plr.Character then
@@ -446,7 +490,7 @@ lockBtn.TextColor3 = Color3.fromRGB(220, 225, 240)
 lockBtn.Font = Enum.Font.GothamSemibold
 lockBtn.TextSize = 12
 lockBtn.Text = "🔓 UI: Разблокирован"
-lockBtn.Parent = mainFrame
+lockBtn.Parent = buttonsContainer
 
 local lockCorner = Instance.new("UICorner")
 lockCorner.CornerRadius = UDim.new(0, 6)
@@ -474,7 +518,7 @@ unloadBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 unloadBtn.Font = Enum.Font.GothamBold
 unloadBtn.TextSize = 12
 unloadBtn.Text = "✖ Деактивировать скрипт"
-unloadBtn.Parent = mainFrame
+unloadBtn.Parent = buttonsContainer
 
 local unloadCorner = Instance.new("UICorner")
 unloadCorner.CornerRadius = UDim.new(0, 6)
@@ -489,29 +533,21 @@ local function getClosestTarget()
 	local closestPart = nil
 	local shortestDistance = Config.AimRadius
 
-	local function checkModel(model)
-		local humanoid = model:FindFirstChildOfClass("Humanoid")
-		local part = model:FindFirstChild(Config.TargetPart)
-		if humanoid and humanoid.Health > 0 and part then
-			local screenPos, onScreen = camera:WorldToViewportPoint(part.Position)
-			if onScreen then
-				local dist = (Vector2.new(screenPos.X, screenPos.Y) - screenCenter).Magnitude
-				if dist < shortestDistance then
-					shortestDistance = dist
-					closestPart = part
+	for model, data in pairs(TrackedModels) do
+		-- Наводимся на ботов (если включен ESP ботов) и на игроков (если включен ESP игроков)
+		local canTarget = (not data.isPlayer and State.EspBots) or (data.isPlayer and State.EspPlayers)
+		if canTarget and model.Parent then
+			local humanoid = model:FindFirstChildOfClass("Humanoid")
+			local part = model:FindFirstChild(Config.TargetPart)
+			if humanoid and humanoid.Health > 0 and part then
+				local screenPos, onScreen = camera:WorldToViewportPoint(part.Position)
+				if onScreen then
+					local dist = (Vector2.new(screenPos.X, screenPos.Y) - screenCenter).Magnitude
+					if dist < shortestDistance then
+						shortestDistance = dist
+						closestPart = part
+					end
 				end
-			end
-		end
-	end
-
-	for _, npc in ipairs(targetsFolder:GetChildren()) do
-		checkModel(npc)
-	end
-
-	if State.EspPlayers then
-		for _, plr in ipairs(Players:GetPlayers()) do
-			if plr ~= localPlayer and plr.Character then
-				checkModel(plr.Character)
 			end
 		end
 	end
@@ -547,6 +583,7 @@ trackConn(UserInputService.InputEnded:Connect(function(input)
 end))
 
 trackConn(aimBtn.MouseButton1Click:Connect(function()
+	if wasAimBtnDragged() then return end
 	setAimingState(not State.IsAiming)
 end))
 
