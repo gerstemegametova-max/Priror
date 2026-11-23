@@ -1,8 +1,8 @@
 --!strict
 --[[
-    NEON DEV & TRAINING SUITE v3.6 (Universal LocalScript)
+    NEON DEV & TRAINING SUITE v3.7 (Universal LocalScript)
     Модули:
-    1. Neon Dashed UI + UI Position Lock (фиксация кнопок/окна без отключения функций) + Full Deactivate.
+    1. Auto-Cleanup старых копий при перезапуске + плавающая кнопка фиксации UI (🔒 UI: PINNED).
     2. Lock-On System (Голова / Тело, упреждение по скорости цели, FOV-круг, луч захвата).
     3. Players Visuals (полное отключение ESP, компактные плашки, 3D-лучи, Chams, частицы).
     4. Bot / NPC ESP (автопоиск NPC в Workspace, плашки, подсветка, частицы).
@@ -10,7 +10,7 @@
 ]]
 
 -- ============================================================================
--- 1. СЕРВИСЫ И БАЗОВЫЕ ПЕРЕМЕННЫЕ
+-- 1. СЕРВИСЫ И АВТООЧИСТКА ПРЕДЫДУЩИХ КОПИЙ
 -- ============================================================================
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -22,13 +22,37 @@ local localPlayer = Players.LocalPlayer
 local playerGui = localPlayer:WaitForChild("PlayerGui")
 local camera: Camera? = Workspace.CurrentCamera
 
+-- Удаляем старые GUI и отвязываем прошлые циклы камеры при перезапуске скрипта
+local SESSION_ID = tostring(os.clock()) .. "_" .. tostring(math.random(10000, 99999))
+playerGui:SetAttribute("NeonSuiteSession", SESSION_ID)
+
+for _, child in ipairs(playerGui:GetChildren()) do
+	if child:IsA("ScreenGui") and string.sub(child.Name, 1, 12) == "NeonDevSuite" then
+		child:Destroy()
+	end
+end
+
+for _, oldBind in ipairs({
+	"NeonLockOnV3",
+	"NeonLockOnV32",
+	"NeonLockOnV33",
+	"NeonLockOnV34",
+	"NeonLockOnV35",
+	"NeonLockOnV36",
+	"NeonLockOnV37",
+}) do
+	pcall(function()
+		RunService:UnbindFromRenderStep(oldBind)
+	end)
+end
+
 -- ============================================================================
 -- 2. КОНФИГУРАЦИЯ И СОСТОЯНИЕ МОДУЛЕЙ
 -- ============================================================================
 local STATE = {
 	-- Общее состояние скрипта
 	Deactivated = false,
-	UiLocked = false, -- Фиксирует позицию окна и кнопок (перетаскивание отключено, клики работают)
+	UiLocked = false, -- Фиксирует позицию кнопок и окна (не двигаются, но нажатия работают)
 
 	-- Меню и тема пунктира
 	MenuOpen = false,
@@ -97,7 +121,7 @@ local COLORS = {
 }
 
 local function getAccentColor(): Color3
-	return (STATE.DashedColorMode == "LIME") and COLORS.Lime or COLORS.Red
+	return if STATE.DashedColorMode == "LIME" then COLORS.Lime else COLORS.Red
 end
 
 -- Состояние Lock-On, Noclip и глобальных подключений
@@ -832,10 +856,10 @@ local function findClosestTarget(): Model?
 end
 
 -- ============================================================================
--- 7. ПОСТРОЕНИЕ НЕОНОВОГО МЕНЮ + ФИКСАЦИЯ ПОЗИЦИИ UI + ДЕАКТИВАЦИЯ
+-- 7. ПОСТРОЕНИЕ НЕОНОВОГО МЕНЮ + ПЛАВАЮЩАЯ КНОПКА ФИКСАЦИИ UI + ДЕАКТИВАЦИЯ
 -- ============================================================================
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "NeonDevSuiteV36"
+screenGui.Name = "NeonDevSuiteV37"
 screenGui.ResetOnSpawn = false
 screenGui.IgnoreGuiInset = true
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
@@ -868,15 +892,16 @@ lockStatusLabel.Font = Enum.Font.GothamBlack
 lockStatusLabel.TextSize = 12
 lockStatusLabel.Parent = fovCircle
 
+-- Плавающая кнопка 1: Меню
 local openPill = Instance.new("TextButton")
-openPill.Size = UDim2.fromOffset(142, 38)
-openPill.Position = UDim2.new(0, 18, 0.5, -42)
+openPill.Size = UDim2.fromOffset(142, 36)
+openPill.Position = UDim2.new(0, 18, 0.5, -62)
 openPill.BackgroundColor3 = COLORS.BgDark
 openPill.BackgroundTransparency = 0.1
 openPill.Text = "⚡ DEV SUITE"
 openPill.TextColor3 = getAccentColor()
 openPill.Font = Enum.Font.GothamBlack
-openPill.TextSize = 13
+openPill.TextSize = 12
 openPill.AutoButtonColor = false
 openPill.Parent = screenGui
 
@@ -886,9 +911,10 @@ pillCorner.Parent = openPill
 
 local pillStroke, pillGrad = attachDashedStroke(openPill, 2.2, getAccentColor())
 
+-- Плавающая кнопка 2: Lock-On
 local lockPill = Instance.new("TextButton")
-lockPill.Size = UDim2.fromOffset(142, 38)
-lockPill.Position = UDim2.new(0, 18, 0.5, 6)
+lockPill.Size = UDim2.fromOffset(142, 36)
+lockPill.Position = UDim2.new(0, 18, 0.5, -18)
 lockPill.BackgroundColor3 = COLORS.BgDark
 lockPill.BackgroundTransparency = 0.1
 lockPill.Text = "🎯 LOCK: OFF"
@@ -906,6 +932,28 @@ local lockPillStroke = Instance.new("UIStroke")
 lockPillStroke.Thickness = 2.0
 lockPillStroke.Color = COLORS.TextDim
 lockPillStroke.Parent = lockPill
+
+-- Плавающая кнопка 3: Фиксация позиции UI (🔒 UI: PINNED / 🔓 UI: FREE)
+local pinPill = Instance.new("TextButton")
+pinPill.Size = UDim2.fromOffset(142, 36)
+pinPill.Position = UDim2.new(0, 18, 0.5, 26)
+pinPill.BackgroundColor3 = COLORS.BgDark
+pinPill.BackgroundTransparency = 0.1
+pinPill.Text = "🔓 UI: FREE"
+pinPill.TextColor3 = COLORS.Cyan
+pinPill.Font = Enum.Font.GothamBlack
+pinPill.TextSize = 12
+pinPill.AutoButtonColor = false
+pinPill.Parent = screenGui
+
+local pinPillCorner = Instance.new("UICorner")
+pinPillCorner.CornerRadius = UDim.new(1, 0)
+pinPillCorner.Parent = pinPill
+
+local pinPillStroke = Instance.new("UIStroke")
+pinPillStroke.Thickness = 2.0
+pinPillStroke.Color = COLORS.Cyan
+pinPillStroke.Parent = pinPill
 
 local function updateLockPillVisuals()
 	if isLocking and STATE.LockEnabled then
@@ -968,14 +1016,14 @@ local titleLabel = Instance.new("TextLabel")
 titleLabel.Size = UDim2.new(0, 140, 1, 0)
 titleLabel.Position = UDim2.fromOffset(12, 0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = "⚡ NEON v3.6"
+titleLabel.Text = "⚡ NEON v3.7"
 titleLabel.TextColor3 = COLORS.TextMain
 titleLabel.Font = Enum.Font.GothamBlack
 titleLabel.TextSize = 13
 titleLabel.TextXAlignment = Enum.TextXAlignment.Left
 titleLabel.Parent = header
 
--- Кнопка фиксации позиции UI (🔒 LOCK UI / 🔓 FREE UI) — кнопки не двигаются, но клики работают!
+-- Дубликат кнопки фиксации UI в шапке окна
 local uiPinBtn = Instance.new("TextButton")
 uiPinBtn.Size = UDim2.fromOffset(88, 26)
 uiPinBtn.Position = UDim2.new(1, -258, 0.5, -13)
@@ -995,7 +1043,6 @@ sLockStroke.Thickness = 1.2
 sLockStroke.Color = COLORS.Cyan
 sLockStroke.Parent = uiPinBtn
 
--- Кнопка переключения цвета пунктира (LIME / RED)
 local themeSwitchBtn = Instance.new("TextButton")
 themeSwitchBtn.Size = UDim2.fromOffset(68, 26)
 themeSwitchBtn.Position = UDim2.new(1, -164, 0.5, -13)
@@ -1015,7 +1062,6 @@ tBtnStroke.Thickness = 1.2
 tBtnStroke.Color = getAccentColor()
 tBtnStroke.Parent = themeSwitchBtn
 
--- Кнопка полной деактивации скрипта (🛑 OFF)
 local deactivateBtn = Instance.new("TextButton")
 deactivateBtn.Size = UDim2.fromOffset(54, 26)
 deactivateBtn.Position = UDim2.new(1, -90, 0.5, -13)
@@ -1035,7 +1081,6 @@ deactStroke.Thickness = 1.3
 deactStroke.Color = COLORS.Red
 deactStroke.Parent = deactivateBtn
 
--- Кнопка сворачивания окна
 local closeBtn = Instance.new("TextButton")
 closeBtn.Size = UDim2.fromOffset(26, 26)
 closeBtn.Position = UDim2.new(1, -32, 0.5, -13)
@@ -1142,14 +1187,22 @@ for i, name in ipairs(tabNames) do
 	end)
 end
 
--- Блокировка / разблокировка перемещения кнопок и окна (функции продолжают работать!)
+-- Фиксация / освобождение позиции UI (кнопки и окно не двигаются, но все нажатия работают!)
 local function setUiLocked(locked: boolean)
 	STATE.UiLocked = locked
 	if locked then
-		uiPinBtn.Text = "🔒 LOCK UI"
+		pinPill.Text = "🔒 UI: PINNED"
+		pinPill.TextColor3 = COLORS.Amber
+		pinPillStroke.Color = COLORS.Amber
+
+		uiPinBtn.Text = "🔒 PINNED"
 		uiPinBtn.TextColor3 = COLORS.Amber
 		sLockStroke.Color = COLORS.Amber
 	else
+		pinPill.Text = "🔓 UI: FREE"
+		pinPill.TextColor3 = COLORS.Cyan
+		pinPillStroke.Color = COLORS.Cyan
+
 		uiPinBtn.Text = "🔓 FREE UI"
 		uiPinBtn.TextColor3 = COLORS.Cyan
 		sLockStroke.Color = COLORS.Cyan
@@ -1162,7 +1215,7 @@ end)
 
 local function applyDashedTheme()
 	local accent = getAccentColor()
-	themeSwitchBtn.Text = (STATE.DashedColorMode == "LIME") and "🟢 LIME" or "🔴 RED"
+	themeSwitchBtn.Text = if STATE.DashedColorMode == "LIME" then "🟢 LIME" else "🔴 RED"
 	themeSwitchBtn.TextColor3 = accent
 	tBtnStroke.Color = accent
 
@@ -1196,7 +1249,7 @@ local function applyDashedTheme()
 end
 
 themeSwitchBtn.MouseButton1Click:Connect(function()
-	STATE.DashedColorMode = (STATE.DashedColorMode == "LIME") and "RED" or "LIME"
+	STATE.DashedColorMode = if STATE.DashedColorMode == "LIME" then "RED" else "LIME"
 	applyDashedTheme()
 end)
 
@@ -1210,7 +1263,7 @@ local function deactivateScript()
 	currentTarget = nil
 
 	pcall(function()
-		RunService:UnbindFromRenderStep("NeonLockOnV36")
+		RunService:UnbindFromRenderStep("NeonLockOnV37")
 	end)
 
 	for _, conn in ipairs(globalConnections) do
@@ -1763,8 +1816,8 @@ local function makeDraggable(dragHandle: GuiObject, moveTarget: GuiObject, onTap
 	end)
 
 	table.insert(globalConnections, UserInputService.InputChanged:Connect(function(input)
-		-- Если позиция UI залочена — кнопки и окно стоят на месте, но нажатия продолжают срабатывать
-		if dragging and not STATE.UiLocked and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+		if not dragging or STATE.UiLocked then return end
+		if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
 			local delta = input.Position - dragStart
 			if delta.Magnitude > 6 then
 				moved = true
@@ -1793,6 +1846,9 @@ end)
 makeDraggable(lockPill, lockPill, function()
 	setLockActive(not isLocking)
 end)
+makeDraggable(pinPill, pinPill, function()
+	setUiLocked(not STATE.UiLocked)
+end)
 
 closeBtn.MouseButton1Click:Connect(function()
 	setMenuVisible(false)
@@ -1801,8 +1857,17 @@ end)
 -- ============================================================================
 -- 11. ЦИКЛ LOCK-ON КАМЕРЫ + ФИЗИКА + РЕНДЕР
 -- ============================================================================
+local function checkSessionValid(): boolean
+	if STATE.Deactivated then return false end
+	if playerGui:GetAttribute("NeonSuiteSession") ~= SESSION_ID then
+		deactivateScript()
+		return false
+	end
+	return true
+end
+
 local function onCameraStep(dt: number)
-	if STATE.Deactivated then return end
+	if not checkSessionValid() then return end
 	local activeCam = camera
 	if not activeCam then return end
 
@@ -1871,7 +1936,7 @@ local function onCameraStep(dt: number)
 end
 
 local function onPhysicsStep()
-	if STATE.Deactivated or not STATE.NoclipEnabled then return end
+	if not checkSessionValid() or not STATE.NoclipEnabled then return end
 	local char = localPlayer.Character
 	if not char then return end
 
@@ -1929,7 +1994,7 @@ local function updateOverlayList(list: { [any]: EntityOverlay }, camPos: Vector3
 end
 
 local function onRenderStepped(dt: number)
-	if STATE.Deactivated then return end
+	if not checkSessionValid() then return end
 	elapsedTime += dt
 
 	local dashRot = (elapsedTime * 55) % 360
@@ -2060,6 +2125,6 @@ table.insert(globalConnections, Workspace:GetPropertyChangedSignal("CurrentCamer
 	camera = Workspace.CurrentCamera
 end))
 
-RunService:BindToRenderStep("NeonLockOnV36", Enum.RenderPriority.Camera.Value + 1, onCameraStep)
+RunService:BindToRenderStep("NeonLockOnV37", Enum.RenderPriority.Camera.Value + 1, onCameraStep)
 table.insert(globalConnections, RunService.Stepped:Connect(onPhysicsStep))
 table.insert(globalConnections, RunService.RenderStepped:Connect(onRenderStepped))
