@@ -1,666 +1,2122 @@
--- Единый LocalScript (поместить в StarterPlayer -> StarterPlayerScripts)
+--!strict
+--[[
+    NEON DEV & TRAINING SUITE v3.5 (Universal LocalScript)
+    Модули:
+    1. Neon Dashed UI + Script Lock/Unlock + Full Deactivate.
+    2. Lock-On System (Голова / Тело, упреждение по скорости цели, FOV-круг).
+    3. Players Visuals (исправленный ESP, компактные плашки, 3D-лучи, Chams, частицы).
+    4. Bot / NPC ESP (исправленное отключение, автопоиск NPC, плашки, подсветка).
+    5. Physics Lab (WalkSpeed, JumpPower, Air-Jump, Free-Fly, Noclip, Teleport).
+]]
+
+-- ============================================================================
+-- 1. СЕРВИСЫ И БАЗОВЫЕ ПЕРЕМЕННЫЕ
+-- ============================================================================
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local Workspace = game:GetService("Workspace")
 
 local localPlayer = Players.LocalPlayer
-if not localPlayer then
-	Players:GetPropertyChangedSignal("LocalPlayer"):Wait()
-	localPlayer = Players.LocalPlayer
-end
-
 local playerGui = localPlayer:WaitForChild("PlayerGui")
-local camera = workspace.CurrentCamera
+local camera: Camera? = Workspace.CurrentCamera
 
--- ==========================================
--- НАСТРОЙКИ И СОСТОЯНИЕ
--- ==========================================
-local Config = {
-	AimRadius = 250,         -- Радиус захвата в пикселях от центра экрана
-	Smoothness = 0.2,        -- Плавность доводки камеры (0.05 - 1)
-	TargetPart = "Head",     -- Часть тела для прицеливания
-	MaxEspDistance = 200,    -- Дистанция видимости HP и цифр урона
-	DmgPoolSize = 20,        -- Размер пула цифр урона (экономия FPS)
-	DmgLifetime = 0.85,      -- Время жизни цифры урона (сек)
-	DmgFloatSpeed = 2.8,     -- Скорость всплытия цифры (стадов/сек)
+-- ============================================================================
+-- 2. КОНФИГУРАЦИЯ И СОСТОЯНИЕ МОДУЛЕЙ
+-- ============================================================================
+local STATE = {
+	-- Общее состояние скрипта
+	Deactivated = false,
+	ScriptLocked = false, -- Залочить скрипт (фиксирует UI, настройки и ставит Lock-On на паузу)
+
+	-- Меню и тема пунктира
+	MenuOpen = false,
+	MenuKey = Enum.KeyCode.RightShift,
+	AltMenuKey = Enum.KeyCode.K,
+	DashedColorMode = "LIME", -- "LIME" или "RED"
+
+	-- Вкладка 1: Lock-On
+	LockEnabled = true,
+	LockToggleMode = false,
+	LockOnFire = false,
+	LockIncludeBots = true,
+	LockKey = Enum.UserInputType.MouseButton2,
+	LockAltKey = Enum.KeyCode.E,
+	LockRadiusPx = 240,
+	LockSmoothness = 0.30,
+	LockMaxDistance = 400,
+	LockTargetPart = "Head", -- "Head" (Голова) или "HumanoidRootPart" (Тело)
+	LockPredictionEnabled = true,
+	LockPredictionTime = 0.16,
+	ShowFovCircle = true,
+	ShowLockBeam = true,
+
+	-- Общие настройки плашек ESP
+	EspDetailMode = "COMPACT", -- "FULL", "COMPACT", "MINIMAL"
+	EspScale = 0.85,
+
+	-- Вкладка 2: Players
+	PlayerMasterEsp = true,
+	PlayerOverlayEnabled = true,
+	PlayerDashedTracers = true,
+	PlayerHighlight = true,
+	ParticlesEnabled = true,
+	MaxDistance = 350,
+
+	-- Вкладка 3: Bot ESP
+	BotMasterEsp = true,
+	BotEspEnabled = true,
+	BotHighlight = true,
+	BotParticles = true,
+	BotMaxDistance = 350,
+
+	-- Вкладка 4: Physics Lab
+	CustomWalkSpeed = 16,
+	CustomJumpPower = 50,
+	InfiniteJump = false,
+	FlyEnabled = false,
+	FlySpeed = 65,
+	NoclipEnabled = false,
 }
 
-local State = {
-	ScriptActive = true,
-	AimbotEnabled = false,
-	IsAiming = false,
-	EspBots = true,
-	EspPlayers = false,
-	DamageNumbers = true,
-	UILocked = false,
+local COLORS = {
+	BgDark = Color3.fromRGB(12, 14, 20),
+	BgPanel = Color3.fromRGB(19, 23, 33),
+	BgElement = Color3.fromRGB(27, 32, 45),
+	Lime = Color3.fromRGB(163, 255, 18),
+	Red = Color3.fromRGB(255, 42, 72),
+	Amber = Color3.fromRGB(255, 184, 28),
+	Cyan = Color3.fromRGB(0, 240, 255),
+	Purple = Color3.fromRGB(175, 90, 255),
+	TextMain = Color3.fromRGB(245, 248, 255),
+	TextDim = Color3.fromRGB(145, 156, 180),
+	HpHigh = Color3.fromRGB(163, 255, 18),
+	HpMid = Color3.fromRGB(255, 204, 51),
+	HpLow = Color3.fromRGB(255, 42, 72),
 }
 
-local Connections = {}   -- Все глобальные слушатели для чистой выгрузки
-local TrackedModels = {} -- [Model] = { billboard = BillboardGui, isPlayer = bool, conns = {} }
-local lockedTarget = nil
-
-local function trackConn(conn)
-	table.insert(Connections, conn)
-	return conn
+local function getAccentColor(): Color3
+	return (STATE.DashedColorMode == "LIME") and COLORS.Lime or COLORS.Red
 end
 
--- ==========================================
--- ПУЛ ОБЪЕКТОВ ДЛЯ ЦИФР УРОНА (ZERO GC)
--- ==========================================
-local dmgFolder = Instance.new("Folder")
-dmgFolder.Name = "DebugDamagePool"
-dmgFolder.Parent = camera -- Храним в камере, чтобы пули (Raycast) не задевали якоря
+-- Состояние Lock-On, Noclip и глобальных подключений
+local isLocking = false
+local currentTarget: Model? = nil
+local smoothedLookDir: Vector3? = nil
+local lockBeam: Beam? = nil
+local lockAtt0: Attachment? = nil
+local lockAtt1: Attachment? = nil
+local noclipCachedParts: { [BasePart]: boolean } = {}
+local globalConnections: { RBXScriptConnection } = {}
 
-local inactiveDmgPool = {}
-local activeDmgList = {}
+type EntityOverlay = {
+	key: Instance,
+	displayName: string,
+	isBot: boolean,
+	character: Model,
+	humanoid: Humanoid,
+	rootPart: BasePart,
+	head: BasePart,
+	billboard: BillboardGui,
+	card: Frame,
+	boxStroke: UIStroke,
+	nameLabel: TextLabel,
+	barBg: Frame,
+	hpFill: Frame,
+	hpGhost: Frame,
+	distLabel: TextLabel,
+	glowStroke: UIStroke,
+	highlight: Highlight,
+	headAttachment: Attachment,
+	sparkEmitter: ParticleEmitter,
+	bodyAttachment: Attachment,
+	auraEmitter: ParticleEmitter,
+	tracerBeam: Beam?,
+	tracerAtt0: Attachment?,
+	tracerAtt1: Attachment?,
+	connections: { RBXScriptConnection },
+	lastHealth: number,
+	isLowHp: boolean,
+	isVisible: boolean,
+	fadeReady: boolean,
+}
 
-for i = 1, Config.DmgPoolSize do
-	local part = Instance.new("Part")
-	part.Name = "DmgAnchor"
-	part.Size = Vector3.new(0.1, 0.1, 0.1)
-	part.Transparency = 1
-	part.Anchored = true
-	part.CanCollide = false
-	part.CanQuery = false
-	part.CanTouch = false
-	part.Parent = dmgFolder
+local playerOverlays: { [Player]: EntityOverlay } = {}
+local botOverlays: { [Model]: EntityOverlay } = {}
+local playerConnections: { [Player]: RBXScriptConnection } = {}
+local uiRefreshCallbacks: { () -> () } = {}
 
-	local billboard = Instance.new("BillboardGui")
-	billboard.Size = UDim2.new(3, 0, 1.2, 0)
-	billboard.AlwaysOnTop = true
-	billboard.MaxDistance = Config.MaxEspDistance
-	billboard.Enabled = false
-	billboard.Parent = part
-
-	local label = Instance.new("TextLabel")
-	label.Size = UDim2.new(1, 0, 1, 0)
-	label.BackgroundTransparency = 1
-	label.Font = Enum.Font.GothamBlack
-	label.TextScaled = true
-	label.TextStrokeTransparency = 0.2
-	label.TextStrokeColor3 = Color3.fromRGB(15, 15, 15)
-	label.Parent = billboard
-
-	table.insert(inactiveDmgPool, {
-		part = part,
-		billboard = billboard,
-		label = label,
-		elapsed = 0,
-		startPos = Vector3.zero,
-		offsetX = 0,
-		offsetZ = 0,
-	})
+-- ============================================================================
+-- 3. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+-- ============================================================================
+local function quickTween(inst: Instance, duration: number, props: { [string]: any }, style: Enum.EasingStyle?)
+	local info = TweenInfo.new(duration, style or Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+	local tw = TweenService:Create(inst, info, props)
+	tw:Play()
+	return tw
 end
 
-local function spawnDamageNumber(position, damageAmount)
-	if not State.ScriptActive or not State.DamageNumbers then return end
+local function buildDashedSequence(dashes: number): NumberSequence
+	local count = math.clamp(dashes, 2, 4)
+	local keypoints: { NumberSequenceKeypoint } = {}
+	local step = 1 / count
 
-	local item = table.remove(inactiveDmgPool)
-	if not item then
-		item = table.remove(activeDmgList, 1)
+	for i = 0, count - 1 do
+		local t0 = i * step
+		local t1 = t0 + step * 0.55
+		local t2 = t0 + step * 0.57
+		local t3 = (i + 1) * step - 0.004
+
+		table.insert(keypoints, NumberSequenceKeypoint.new(math.clamp(t0, 0, 1), 0))
+		table.insert(keypoints, NumberSequenceKeypoint.new(math.clamp(t1, 0, 1), 0))
+		table.insert(keypoints, NumberSequenceKeypoint.new(math.clamp(t2, 0, 1), 1))
+		table.insert(keypoints, NumberSequenceKeypoint.new(math.clamp(t3, 0, 1), 1))
 	end
+	table.insert(keypoints, NumberSequenceKeypoint.new(1, 1))
+	return NumberSequence.new(keypoints)
+end
 
-	local roundedDmg = math.max(1, math.floor(damageAmount + 0.5))
-	item.label.Text = tostring(roundedDmg)
-	item.label.TextTransparency = 0
-	item.label.TextStrokeTransparency = 0.2
+local DASHED_UI_TRANSPARENCY = buildDashedSequence(4)
+local DASHED_BEAM_TRANSPARENCY = buildDashedSequence(4)
 
-	if roundedDmg >= 50 then
-		item.label.TextColor3 = Color3.fromRGB(255, 75, 75)
-	elseif roundedDmg >= 25 then
-		item.label.TextColor3 = Color3.fromRGB(255, 195, 50)
+local function attachDashedStroke(target: GuiObject, thickness: number, color: Color3): (UIStroke, UIGradient)
+	local stroke = Instance.new("UIStroke")
+	stroke.Thickness = thickness
+	stroke.Color = color
+	stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	stroke.Parent = target
+
+	local grad = Instance.new("UIGradient")
+	grad.Transparency = DASHED_UI_TRANSPARENCY
+	grad.Parent = stroke
+
+	return stroke, grad
+end
+
+local function getHealthColor(percent: number): Color3
+	if percent > 0.65 then
+		return COLORS.HpHigh
+	elseif percent > 0.30 then
+		return COLORS.HpMid
 	else
-		item.label.TextColor3 = Color3.fromRGB(255, 255, 255)
+		return COLORS.HpLow
 	end
-
-	item.elapsed = 0
-	item.startPos = position + Vector3.new(0, 1.5, 0)
-	item.offsetX = (math.random() - 0.5) * 1.6
-	item.offsetZ = (math.random() - 0.5) * 1.6
-
-	item.part.Position = item.startPos
-	item.billboard.Enabled = true
-	table.insert(activeDmgList, item)
 end
 
--- ==========================================
--- ПЕРЕТАСКИВАНИЕ БЕЗ ДЁРГАНЬЯ (С LOCK)
--- ==========================================
-local function makeDraggable(guiObject, dragHandle)
-	dragHandle = dragHandle or guiObject
-	local dragging = false
-	local dragInput = nil
-	local dragStart = nil
-	local startPos = nil
-	local wasDragged = false
+local function getCharacterRoot(character: Model): BasePart?
+	local root = character:FindFirstChild("HumanoidRootPart")
+		or character:FindFirstChild("Torso")
+		or character:FindFirstChild("UpperTorso")
+		or character.PrimaryPart
+		or character:FindFirstChildWhichIsA("BasePart")
+	return root :: BasePart?
+end
 
-	trackConn(dragHandle.InputBegan:Connect(function(input)
-		if State.UILocked then return end
-		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-			dragging = true
-			wasDragged = false
-			dragInput = input
-			dragStart = input.Position
-			startPos = guiObject.Position
+local function getTargetAimPart(character: Model): BasePart?
+	if STATE.LockTargetPart == "Head" then
+		local head = character:FindFirstChild("Head")
+		if head and head:IsA("BasePart") then
+			return head
 		end
-	end))
+	end
+	return getCharacterRoot(character)
+end
 
-	trackConn(UserInputService.InputChanged:Connect(function(input)
-		if dragging and input == dragInput and not State.UILocked then
-			local delta = input.Position - dragStart
-			if delta.Magnitude > 5 then
-				wasDragged = true
+local function getPredictedAimPosition(targetPart: BasePart): Vector3
+	if not STATE.LockPredictionEnabled or STATE.LockPredictionTime <= 0 then
+		return targetPart.Position
+	end
+
+	local vel = targetPart.AssemblyLinearVelocity
+	if vel.Magnitude < 0.5 then
+		return targetPart.Position
+	end
+
+	local leadVector = Vector3.new(vel.X, vel.Y * 0.6, vel.Z) * STATE.LockPredictionTime
+	return targetPart.Position + leadVector
+end
+
+local function disableNoclip()
+	STATE.NoclipEnabled = false
+	for part, wasCollidable in pairs(noclipCachedParts) do
+		if part and part.Parent then
+			part.CanCollide = wasCollidable
+		end
+	end
+	table.clear(noclipCachedParts)
+end
+
+-- ============================================================================
+-- 4. МОДУЛЬ ОВЕРЛЕЕВ (ИСПРАВЛЕННОЕ ОТКЛЮЧЕНИЕ + ПЛАШКИ + ЛУЧИ + ЧАСТИЦЫ)
+-- ============================================================================
+local function applyOverlayCompactness(data: EntityOverlay)
+	local s = STATE.EspScale
+	local mode = STATE.EspDetailMode
+
+	if mode == "FULL" then
+		data.billboard.Size = UDim2.fromOffset(math.round(184 * s), math.round(54 * s))
+		data.billboard.StudsOffset = Vector3.new(0, 3.2, 0)
+		data.card.BackgroundTransparency = 0.42
+		data.boxStroke.Enabled = true
+		data.nameLabel.Visible = true
+		data.nameLabel.Size = UDim2.new(1, -8, 0.40, 0)
+		data.nameLabel.Position = UDim2.fromOffset(4, 2)
+		data.nameLabel.TextSize = math.max(9, math.round(12 * s))
+		data.barBg.Size = UDim2.new(0.88, 0, 0.18, 0)
+		data.barBg.Position = UDim2.new(0.06, 0, 0.46, 0)
+		data.distLabel.Visible = true
+		data.distLabel.TextSize = math.max(8, math.round(10 * s))
+	elseif mode == "COMPACT" then
+		data.billboard.Size = UDim2.fromOffset(math.round(132 * s), math.round(34 * s))
+		data.billboard.StudsOffset = Vector3.new(0, 2.8, 0)
+		data.card.BackgroundTransparency = 0.48
+		data.boxStroke.Enabled = true
+		data.nameLabel.Visible = true
+		data.nameLabel.Size = UDim2.new(1, -6, 0.52, 0)
+		data.nameLabel.Position = UDim2.fromOffset(3, 1)
+		data.nameLabel.TextSize = math.max(9, math.round(11 * s))
+		data.barBg.Size = UDim2.new(0.88, 0, 0.24, 0)
+		data.barBg.Position = UDim2.new(0.06, 0, 0.62, 0)
+		data.distLabel.Visible = false
+	else
+		data.billboard.Size = UDim2.fromOffset(math.round(88 * s), math.round(14 * s))
+		data.billboard.StudsOffset = Vector3.new(0, 2.5, 0)
+		data.card.BackgroundTransparency = 1
+		data.boxStroke.Enabled = false
+		data.nameLabel.Visible = false
+		data.distLabel.Visible = false
+		data.barBg.Size = UDim2.new(0.92, 0, 0.56, 0)
+		data.barBg.Position = UDim2.new(0.04, 0, 0.22, 0)
+	end
+end
+
+local function refreshAllOverlayLayouts()
+	for _, data in pairs(playerOverlays) do
+		applyOverlayCompactness(data)
+	end
+	for _, data in pairs(botOverlays) do
+		applyOverlayCompactness(data)
+	end
+end
+
+local function destroyTracer(data: EntityOverlay)
+	if data.tracerBeam then data.tracerBeam:Destroy(); data.tracerBeam = nil end
+	if data.tracerAtt0 then data.tracerAtt0:Destroy(); data.tracerAtt0 = nil end
+	if data.tracerAtt1 then data.tracerAtt1:Destroy(); data.tracerAtt1 = nil end
+end
+
+local function ensurePlayerTracer(data: EntityOverlay)
+	if data.isBot or not STATE.PlayerMasterEsp or not STATE.PlayerDashedTracers or not data.isVisible then
+		destroyTracer(data)
+		return
+	end
+
+	local myChar = localPlayer.Character
+	local myRoot = myChar and getCharacterRoot(myChar)
+	if not myRoot then
+		destroyTracer(data)
+		return
+	end
+
+	if not data.tracerBeam or not data.tracerAtt0 or data.tracerAtt0.Parent ~= myRoot or not data.tracerAtt1 or data.tracerAtt1.Parent ~= data.rootPart then
+		destroyTracer(data)
+
+		local att0 = Instance.new("Attachment")
+		att0.Parent = myRoot
+
+		local att1 = Instance.new("Attachment")
+		att1.Parent = data.rootPart
+
+		local beam = Instance.new("Beam")
+		beam.Attachment0 = att0
+		beam.Attachment1 = att1
+		beam.Width0 = 0.14
+		beam.Width1 = 0.14
+		beam.FaceCamera = true
+		beam.LightEmission = 1
+		beam.LightInfluence = 0
+		beam.Texture = "rbxasset://textures/ui/Scroll/scroll-middle.png"
+		beam.TextureMode = Enum.TextureMode.Wrap
+		beam.TextureLength = 4
+		beam.TextureSpeed = 1.8
+		beam.Color = ColorSequence.new(getAccentColor())
+		beam.Transparency = DASHED_BEAM_TRANSPARENCY
+		beam.Parent = myRoot
+
+		data.tracerAtt0 = att0
+		data.tracerAtt1 = att1
+		data.tracerBeam = beam
+	else
+		data.tracerBeam.Color = ColorSequence.new(getAccentColor())
+	end
+end
+
+local function syncEntityOverlay(data: EntityOverlay)
+	local hum = data.humanoid
+	if not hum or hum.MaxHealth <= 0 then return end
+
+	local currentHp = hum.Health
+	local ratio = math.clamp(currentHp / hum.MaxHealth, 0, 1)
+	local hpColor = getHealthColor(ratio)
+	local accentColor = getAccentColor()
+	data.isLowHp = ratio <= 0.30
+
+	if currentHp < data.lastHealth then
+		local particlesOn = if data.isBot
+			then (STATE.BotMasterEsp and STATE.BotParticles)
+			else (STATE.PlayerMasterEsp and STATE.ParticlesEnabled)
+		if data.isVisible and particlesOn then
+			data.sparkEmitter:Emit(7)
+			data.auraEmitter:Emit(5)
+		end
+		task.delay(0.2, function()
+			if not STATE.Deactivated and data.billboard and data.billboard.Parent then
+				quickTween(data.hpGhost, 0.32, { Size = UDim2.fromScale(ratio, 1) }, Enum.EasingStyle.Quad)
 			end
-			guiObject.Position = UDim2.new(
-				startPos.X.Scale,
-				startPos.X.Offset + delta.X,
-				startPos.Y.Scale,
-				startPos.Y.Offset + delta.Y
-			)
-		end
-	end))
-
-	trackConn(UserInputService.InputEnded:Connect(function(input)
-		if input == dragInput then
-			dragging = false
-			dragInput = nil
-		end
-	end))
-
-	return function()
-		return wasDragged
+		end)
+	else
+		data.hpGhost.Size = UDim2.fromScale(ratio, 1)
 	end
-end
+	data.lastHealth = currentHp
 
--- ==========================================
--- ИНТЕРФЕЙС МЕНЮ (DEBUG PANEL)
--- ==========================================
-local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "ShootingRangeUnifiedUI"
-screenGui.ResetOnSpawn = false
-screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-screenGui.Parent = playerGui
-
-local mainFrame = Instance.new("Frame")
-mainFrame.Name = "MainMenu"
-mainFrame.Size = UDim2.new(0, 210, 0, 276)
-mainFrame.Position = UDim2.new(0, 20, 0.5, -138)
-mainFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
-mainFrame.BorderSizePixel = 0
-mainFrame.Parent = screenGui
-
-local uiCorner = Instance.new("UICorner")
-uiCorner.CornerRadius = UDim.new(0, 8)
-uiCorner.Parent = mainFrame
-
-local uiStroke = Instance.new("UIStroke")
-uiStroke.Color = Color3.fromRGB(55, 55, 65)
-uiStroke.Thickness = 1
-uiStroke.Parent = mainFrame
-
--- Шапка окна (фиксирована сверху)
-local header = Instance.new("TextLabel")
-header.Size = UDim2.new(1, 0, 0, 32)
-header.Position = UDim2.new(0, 0, 0, 0)
-header.BackgroundColor3 = Color3.fromRGB(28, 28, 35)
-header.Text = "  DEBUG PANEL"
-header.TextColor3 = Color3.fromRGB(235, 235, 245)
-header.Font = Enum.Font.GothamBold
-header.TextSize = 13
-header.TextXAlignment = Enum.TextXAlignment.Left
-header.Parent = mainFrame
-
-local headerCorner = Instance.new("UICorner")
-headerCorner.CornerRadius = UDim.new(0, 8)
-headerCorner.Parent = header
-
--- Отдельный контейнер для кнопок под шапкой
-local buttonsContainer = Instance.new("Frame")
-buttonsContainer.Size = UDim2.new(1, 0, 1, -38)
-buttonsContainer.Position = UDim2.new(0, 0, 0, 38)
-buttonsContainer.BackgroundTransparency = 1
-buttonsContainer.Parent = mainFrame
-
-local listLayout = Instance.new("UIListLayout")
-listLayout.Padding = UDim.new(0, 6)
-listLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-listLayout.SortOrder = Enum.SortOrder.LayoutOrder
-listLayout.Parent = buttonsContainer
-
-local function createToggleBtn(order, text, defaultState, callback)
-	local btn = Instance.new("TextButton")
-	btn.LayoutOrder = order
-	btn.Size = UDim2.new(0, 190, 0, 32)
-	btn.Font = Enum.Font.GothamSemibold
-	btn.TextSize = 12
-	btn.AutoButtonColor = false
-	btn.Parent = buttonsContainer
-
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 6)
-	corner.Parent = btn
-
-	local active = defaultState
-	local function refreshVisual()
-		btn.Text = text .. (active and ": ON" or ": OFF")
-		btn.BackgroundColor3 = active and Color3.fromRGB(45, 130, 85) or Color3.fromRGB(35, 35, 42)
-		btn.TextColor3 = active and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(175, 175, 185)
+	if not data.isLowHp and data.fadeReady then
+		data.glowStroke.Transparency = 0.25
 	end
 
-	refreshVisual()
+	quickTween(data.hpFill, 0.2, {
+		Size = UDim2.fromScale(ratio, 1),
+		BackgroundColor3 = hpColor,
+	}, Enum.EasingStyle.Quad)
 
-	trackConn(btn.MouseButton1Click:Connect(function()
-		active = not active
-		refreshVisual()
-		callback(active)
-	end))
+	quickTween(data.glowStroke, 0.2, { Color = hpColor }, Enum.EasingStyle.Quad)
 
-	return btn
+	data.boxStroke.Color = if data.isBot then COLORS.Purple else accentColor
+	data.highlight.OutlineColor = if data.isBot then hpColor else accentColor
+	data.highlight.FillColor = hpColor
+	data.sparkEmitter.Color = ColorSequence.new(accentColor, Color3.new(1, 1, 1))
+	data.auraEmitter.Color = ColorSequence.new(hpColor, accentColor)
 end
 
--- Плавающая кнопка Aimbot
-local aimBtn = Instance.new("TextButton")
-aimBtn.Name = "FloatingAimButton"
-aimBtn.Size = UDim2.new(0, 72, 0, 72)
-aimBtn.Position = UDim2.new(1, -110, 0.5, -36)
-aimBtn.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
-aimBtn.Text = "AIM\nOFF"
-aimBtn.TextColor3 = Color3.fromRGB(200, 200, 210)
-aimBtn.Font = Enum.Font.GothamBlack
-aimBtn.TextSize = 14
-aimBtn.Visible = State.AimbotEnabled
-aimBtn.Parent = screenGui
-
-local aimCorner = Instance.new("UICorner")
-aimCorner.CornerRadius = UDim.new(1, 0)
-aimCorner.Parent = aimBtn
-
-local aimStroke = Instance.new("UIStroke")
-aimStroke.Color = Color3.fromRGB(80, 80, 95)
-aimStroke.Thickness = 2
-aimStroke.Parent = aimBtn
-
-makeDraggable(mainFrame, header)
-local wasAimBtnDragged = makeDraggable(aimBtn, aimBtn)
-
--- ==========================================
--- ОТСЛЕЖИВАНИЕ МОДЕЛЕЙ (ESP + ЦИФРЫ УРОНА)
--- ==========================================
-local function updateAllEspVisibility()
-	for _, data in pairs(TrackedModels) do
-		if data.billboard then
-			data.billboard.Enabled = data.isPlayer and State.EspPlayers or State.EspBots
-		end
-	end
-end
-
-local function cleanupModel(model)
-	local data = TrackedModels[model]
+local function removeEntityOverlay(data: EntityOverlay?)
 	if not data then return end
-	for _, c in ipairs(data.conns) do
-		if c.Connected then c:Disconnect() end
+
+	for _, conn in ipairs(data.connections) do
+		if conn.Connected then
+			conn:Disconnect()
+		end
 	end
-	if data.billboard then
-		data.billboard:Destroy()
+	table.clear(data.connections)
+
+	destroyTracer(data)
+	if data.billboard and data.billboard.Parent then data.billboard:Destroy() end
+	if data.highlight and data.highlight.Parent then data.highlight:Destroy() end
+	if data.headAttachment and data.headAttachment.Parent then data.headAttachment:Destroy() end
+	if data.bodyAttachment and data.bodyAttachment.Parent then data.bodyAttachment:Destroy() end
+
+	if data.isBot then
+		botOverlays[data.character] = nil
+	else
+		playerOverlays[data.key :: Player] = nil
 	end
-	TrackedModels[model] = nil
 end
 
-local function registerModel(model, isPlayer)
-	if not State.ScriptActive or not model or not model:IsA("Model") or TrackedModels[model] then return end
-	if isPlayer and model == localPlayer.Character then return end
+local function createEntityOverlay(character: Model, displayName: string, isBot: boolean, playerKey: Player?)
+	if STATE.Deactivated then return end
 
-	local head = model:FindFirstChild("Head") or model:WaitForChild("Head", 3)
-	local humanoid = model:FindFirstChildOfClass("Humanoid") or model:WaitForChild("Humanoid", 3)
-	if not head or not humanoid or not State.ScriptActive or TrackedModels[model] then return end
-
-	-- Если модель принадлежит реальному игроку, помечаем как игрока
-	if Players:GetPlayerFromCharacter(model) then
-		isPlayer = true
-		if model == localPlayer.Character then return end
+	if isBot then
+		if botOverlays[character] then return end
+	elseif playerKey then
+		if playerKey == localPlayer then return end
+		removeEntityOverlay(playerOverlays[playerKey])
 	end
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid") or character:WaitForChild("Humanoid", 4) :: Humanoid?
+	if STATE.Deactivated or not humanoid or humanoid.Health <= 0 then return end
+
+	local rootPart = getCharacterRoot(character)
+	local head = (character:FindFirstChild("Head") :: BasePart?) or rootPart
+	if not rootPart or not head then return end
+	if playerKey and playerKey.Character ~= character then return end
+
+	local accentColor = getAccentColor()
+	local initialBillboardEnabled = if isBot
+		then (STATE.BotMasterEsp and STATE.BotEspEnabled)
+		else (STATE.PlayerMasterEsp and STATE.PlayerOverlayEnabled)
+	local initialHighlightEnabled = if isBot
+		then (STATE.BotMasterEsp and STATE.BotHighlight)
+		else (STATE.PlayerMasterEsp and STATE.PlayerHighlight)
+	local initialParticlesEnabled = if isBot
+		then (STATE.BotMasterEsp and STATE.BotParticles)
+		else (STATE.PlayerMasterEsp and STATE.ParticlesEnabled)
 
 	local billboard = Instance.new("BillboardGui")
-	billboard.Name = "DebugESP"
+	billboard.Name = if isBot then "BotEspOverlay" else "PlayerEspOverlay"
 	billboard.Adornee = head
-	billboard.Size = UDim2.new(4, 0, 1.1, 0)
-	billboard.StudsOffset = Vector3.new(0, 2.5, 0)
+	billboard.Size = UDim2.fromOffset(184, 54)
+	billboard.StudsOffset = Vector3.new(0, 3.2, 0)
 	billboard.AlwaysOnTop = true
-	billboard.MaxDistance = Config.MaxEspDistance
-	billboard.Enabled = isPlayer and State.EspPlayers or State.EspBots
+	billboard.LightInfluence = 0
+	billboard.MaxDistance = if isBot then STATE.BotMaxDistance else STATE.MaxDistance
+	billboard.Enabled = initialBillboardEnabled
+	billboard.ResetOnSpawn = false
+
+	local card = Instance.new("Frame")
+	card.Size = UDim2.new(1, -4, 1, -4)
+	card.Position = UDim2.fromOffset(2, 2)
+	card.BackgroundColor3 = COLORS.BgDark
+	card.BackgroundTransparency = 0.42
+	card.BorderSizePixel = 0
+	card.Parent = billboard
+
+	local cardCorner = Instance.new("UICorner")
+	cardCorner.CornerRadius = UDim.new(0, 7)
+	cardCorner.Parent = card
+
+	local boxStroke = attachDashedStroke(card, 1.6, if isBot then COLORS.Purple else accentColor)
 
 	local nameLabel = Instance.new("TextLabel")
-	nameLabel.Size = UDim2.new(1, 0, 0.45, 0)
+	nameLabel.Size = UDim2.new(1, -8, 0.42, 0)
+	nameLabel.Position = UDim2.fromOffset(4, 2)
 	nameLabel.BackgroundTransparency = 1
-	nameLabel.Text = (isPlayer and "[P] " or "[NPC] ") .. model.Name
-	nameLabel.TextColor3 = isPlayer and Color3.fromRGB(100, 190, 255) or Color3.fromRGB(255, 220, 110)
+	nameLabel.Text = if isBot then ("[BOT] " .. displayName) else displayName
+	nameLabel.TextColor3 = if isBot then COLORS.Purple else COLORS.TextMain
+	nameLabel.TextTransparency = 1
 	nameLabel.TextStrokeTransparency = 0.4
+	nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
 	nameLabel.Font = Enum.Font.GothamBold
-	nameLabel.TextScaled = true
-	nameLabel.Parent = billboard
+	nameLabel.TextSize = 12
+	nameLabel.Parent = card
 
-	local bgFrame = Instance.new("Frame")
-	bgFrame.Size = UDim2.new(1, 0, 0.45, 0)
-	bgFrame.Position = UDim2.new(0, 0, 0.5, 0)
-	bgFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
-	bgFrame.BorderSizePixel = 0
-	bgFrame.Parent = billboard
+	local distLabel = Instance.new("TextLabel")
+	distLabel.Size = UDim2.new(1, -8, 0.3, 0)
+	distLabel.Position = UDim2.new(0, 4, 0.68, 0)
+	distLabel.BackgroundTransparency = 1
+	distLabel.Text = "0m • 100 HP"
+	distLabel.TextColor3 = accentColor
+	distLabel.TextTransparency = 1
+	distLabel.Font = Enum.Font.GothamMedium
+	distLabel.TextSize = 10
+	distLabel.Parent = card
 
-	local bar = Instance.new("Frame")
-	bar.Size = UDim2.new(1, 0, 1, 0)
-	bar.BackgroundColor3 = Color3.fromRGB(65, 215, 95)
-	bar.BorderSizePixel = 0
-	bar.Parent = bgFrame
+	local barBg = Instance.new("Frame")
+	barBg.Size = UDim2.new(0.88, 0, 0.18, 0)
+	barBg.Position = UDim2.new(0.06, 0, 0.46, 0)
+	barBg.BackgroundColor3 = Color3.fromRGB(16, 18, 25)
+	barBg.BackgroundTransparency = 0.15
+	barBg.BorderSizePixel = 0
+	barBg.Parent = card
 
-	local hpText = Instance.new("TextLabel")
-	hpText.Size = UDim2.new(1, 0, 1, 0)
-	hpText.BackgroundTransparency = 1
-	hpText.TextColor3 = Color3.fromRGB(255, 255, 255)
-	hpText.TextStrokeTransparency = 0.4
-	hpText.Font = Enum.Font.Code
-	hpText.TextScaled = true
-	hpText.ZIndex = 2
-	hpText.Parent = bgFrame
+	local bgCorner = Instance.new("UICorner")
+	bgCorner.CornerRadius = UDim.new(1, 0)
+	bgCorner.Parent = barBg
 
-	local lastHealth = humanoid.Health
+	local glowStroke = Instance.new("UIStroke")
+	glowStroke.Thickness = 1.2
+	glowStroke.Transparency = 0.25
+	glowStroke.Color = COLORS.HpHigh
+	glowStroke.Parent = barBg
 
-	local function refreshHealthUI(newHealth)
-		local cur = math.max(0, math.floor(newHealth))
-		local max = math.max(1, math.floor(humanoid.MaxHealth))
-		local ratio = cur / max
-		bar.Size = UDim2.new(ratio, 0, 1, 0)
-		bar.BackgroundColor3 = Color3.fromHSV(ratio * 0.33, 0.85, 0.9)
-		hpText.Text = cur .. " / " .. max
-	end
+	local hpGhost = Instance.new("Frame")
+	hpGhost.Size = UDim2.fromScale(1, 1)
+	hpGhost.BackgroundColor3 = Color3.new(1, 1, 1)
+	hpGhost.BackgroundTransparency = 0.4
+	hpGhost.BorderSizePixel = 0
+	hpGhost.ZIndex = 1
+	hpGhost.Parent = barBg
 
-	refreshHealthUI(lastHealth)
+	local ghostCorner = Instance.new("UICorner")
+	ghostCorner.CornerRadius = UDim.new(1, 0)
+	ghostCorner.Parent = hpGhost
+
+	local hpFill = Instance.new("Frame")
+	hpFill.Size = UDim2.fromScale(1, 1)
+	hpFill.BackgroundColor3 = COLORS.HpHigh
+	hpFill.BorderSizePixel = 0
+	hpFill.ZIndex = 2
+	hpFill.Parent = barBg
+
+	local fillCorner = Instance.new("UICorner")
+	fillCorner.CornerRadius = UDim.new(1, 0)
+	fillCorner.Parent = hpFill
+
 	billboard.Parent = head
 
-	local modelConns = {}
-	table.insert(modelConns, humanoid.HealthChanged:Connect(function(newHealth)
-		local delta = lastHealth - newHealth
-		lastHealth = newHealth
-		refreshHealthUI(newHealth)
+	local highlight = Instance.new("Highlight")
+	highlight.Name = if isBot then "BotHighlight" else "PlayerHighlight"
+	highlight.Adornee = character
+	highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+	highlight.FillColor = COLORS.HpHigh
+	highlight.FillTransparency = 0.84
+	highlight.OutlineColor = if isBot then COLORS.HpHigh else accentColor
+	highlight.OutlineTransparency = 0.15
+	highlight.Enabled = initialHighlightEnabled
+	highlight.Parent = character
 
-		if delta > 0.1 then
-			spawnDamageNumber(head.Position, delta)
-		end
-	end))
+	local headAtt = Instance.new("Attachment")
+	headAtt.Position = Vector3.new(0, 1.35, 0)
+	headAtt.Parent = head
 
-	table.insert(modelConns, humanoid.Died:Connect(function()
-		refreshHealthUI(0)
-		task.delay(1.2, function()
-			cleanupModel(model)
-		end)
-	end))
+	local sparkEmitter = Instance.new("ParticleEmitter")
+	sparkEmitter.Name = "NeonHeadSparks"
+	sparkEmitter.Texture = "rbxasset://textures/particles/sparkles_main.dds"
+	sparkEmitter.Rate = 6
+	sparkEmitter.Enabled = initialParticlesEnabled
+	sparkEmitter.Lifetime = NumberRange.new(1.0, 1.6)
+	sparkEmitter.Speed = NumberRange.new(1.5, 2.8)
+	sparkEmitter.EmissionDirection = Enum.NormalId.Top
+	sparkEmitter.SpreadAngle = Vector2.new(40, 40)
+	sparkEmitter.Acceleration = Vector3.new(0, 2.0, 0)
+	sparkEmitter.RotSpeed = NumberRange.new(-140, 140)
+	sparkEmitter.Size = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.42),
+		NumberSequenceKeypoint.new(0.7, 0.25),
+		NumberSequenceKeypoint.new(1, 0),
+	})
+	sparkEmitter.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.1),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	sparkEmitter.LightEmission = 1
+	sparkEmitter.LightInfluence = 0
+	sparkEmitter.Parent = headAtt
 
-	table.insert(modelConns, model.AncestryChanged:Connect(function(_, parent)
-		if not parent then
-			cleanupModel(model)
-		end
-	end))
+	local bodyAtt = Instance.new("Attachment")
+	bodyAtt.Position = Vector3.new(0, -1.8, 0)
+	bodyAtt.Parent = rootPart
 
-	TrackedModels[model] = {
+	local auraEmitter = Instance.new("ParticleEmitter")
+	auraEmitter.Name = "NeonBodyAura"
+	auraEmitter.Texture = "rbxasset://textures/particles/smoke_main.dds"
+	auraEmitter.Rate = 7
+	auraEmitter.Enabled = initialParticlesEnabled
+	auraEmitter.Lifetime = NumberRange.new(1.2, 1.9)
+	auraEmitter.Speed = NumberRange.new(2.2, 3.6)
+	auraEmitter.EmissionDirection = Enum.NormalId.Top
+	auraEmitter.SpreadAngle = Vector2.new(25, 25)
+	auraEmitter.Drag = 1.2
+	auraEmitter.RotSpeed = NumberRange.new(-90, 90)
+	auraEmitter.Size = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.25),
+		NumberSequenceKeypoint.new(0.5, 0.65),
+		NumberSequenceKeypoint.new(1, 0.1),
+	})
+	auraEmitter.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.85),
+		NumberSequenceKeypoint.new(0.4, 0.55),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	auraEmitter.LightEmission = 1
+	auraEmitter.LightInfluence = 0
+	auraEmitter.Parent = bodyAtt
+
+	local data: EntityOverlay = {
+		key = (playerKey or character) :: Instance,
+		displayName = displayName,
+		isBot = isBot,
+		character = character,
+		humanoid = humanoid,
+		rootPart = rootPart,
+		head = head,
 		billboard = billboard,
-		isPlayer = isPlayer,
-		conns = modelConns,
+		card = card,
+		boxStroke = boxStroke,
+		nameLabel = nameLabel,
+		barBg = barBg,
+		hpFill = hpFill,
+		hpGhost = hpGhost,
+		distLabel = distLabel,
+		glowStroke = glowStroke,
+		highlight = highlight,
+		headAttachment = headAtt,
+		sparkEmitter = sparkEmitter,
+		bodyAttachment = bodyAtt,
+		auraEmitter = auraEmitter,
+		connections = {},
+		lastHealth = humanoid.Health,
+		isLowHp = false,
+		isVisible = true,
+		fadeReady = false,
 	}
-end
 
--- Поиск NPC без блокировки потока (работает и с папкой Targets, и без неё)
-local function watchTargetsFolder(folder)
-	for _, npc in ipairs(folder:GetChildren()) do
-		task.spawn(registerModel, npc, false)
-	end
-	trackConn(folder.ChildAdded:Connect(function(npc)
-		task.spawn(registerModel, npc, false)
+	table.insert(data.connections, humanoid.HealthChanged:Connect(function()
+		syncEntityOverlay(data)
 	end))
-end
 
-local existingTargets = workspace:FindFirstChild("Targets")
-if existingTargets then
-	watchTargetsFolder(existingTargets)
-end
-
--- Также сканируем модели прямо в workspace (на случай если папки Targets нет)
-for _, obj in ipairs(workspace:GetChildren()) do
-	if obj:IsA("Model") and obj:FindFirstChildOfClass("Humanoid") then
-		task.spawn(registerModel, obj, false)
-	end
-end
-
-trackConn(workspace.ChildAdded:Connect(function(child)
-	if child.Name == "Targets" and child:IsA("Folder") then
-		watchTargetsFolder(child)
-	elseif child:IsA("Model") then
-		task.spawn(registerModel, child, false)
-	end
-end))
-
--- Инициализация других игроков
-local function setupPlayer(plr)
-	if plr == localPlayer then return end
-	if plr.Character then
-		task.spawn(registerModel, plr.Character, true)
-	end
-	trackConn(plr.CharacterAdded:Connect(function(char)
-		task.spawn(registerModel, char, true)
+	table.insert(data.connections, humanoid.Died:Connect(function()
+		removeEntityOverlay(data)
 	end))
+
+	table.insert(data.connections, character.AncestryChanged:Connect(function(_, parent)
+		if not parent then
+			removeEntityOverlay(data)
+		end
+	end))
+
+	if isBot then
+		botOverlays[character] = data
+	elseif playerKey then
+		playerOverlays[playerKey] = data
+	end
+
+	applyOverlayCompactness(data)
+	syncEntityOverlay(data)
+	quickTween(nameLabel, 0.3, { TextTransparency = 0 }, Enum.EasingStyle.Quad)
+	quickTween(distLabel, 0.3, { TextTransparency = 0.05 }, Enum.EasingStyle.Quad)
+
+	task.delay(0.3, function()
+		data.fadeReady = true
+	end)
 end
 
-for _, plr in ipairs(Players:GetPlayers()) do
-	setupPlayer(plr)
+-- ============================================================================
+-- 5. АВТОПОИСК БОТОВ / NPC В WORKSPACE
+-- ============================================================================
+local function tryRegisterBot(inst: Instance)
+	if STATE.Deactivated or not inst:IsA("Humanoid") then return end
+	task.defer(function()
+		if STATE.Deactivated then return end
+		local model = inst.Parent
+		if not model or not model:IsA("Model") or not model.Parent then return end
+		if model == localPlayer.Character then return end
+		if Players:GetPlayerFromCharacter(model) ~= nil then return end
+		if inst.Health <= 0 then return end
+		createEntityOverlay(model, model.Name, true, nil)
+	end)
 end
-trackConn(Players.PlayerAdded:Connect(setupPlayer))
 
--- ==========================================
--- КНОПКИ МЕНЮ
--- ==========================================
-createToggleBtn(1, "Aimbot System", State.AimbotEnabled, function(val)
-	State.AimbotEnabled = val
-	aimBtn.Visible = val
-	if not val then
-		State.IsAiming = false
-		lockedTarget = nil
-		aimBtn.Text = "AIM\nOFF"
-		aimBtn.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+local function scanWorkspaceBots()
+	if STATE.Deactivated then return end
+	for _, desc in ipairs(Workspace:GetDescendants()) do
+		if desc:IsA("Humanoid") then
+			tryRegisterBot(desc)
+		end
 	end
-end)
+end
 
-createToggleBtn(2, "ESP Боты (NPC)", State.EspBots, function(val)
-	State.EspBots = val
-	updateAllEspVisibility()
-end)
+table.insert(globalConnections, Workspace.DescendantAdded:Connect(tryRegisterBot))
 
-createToggleBtn(3, "ESP Игроки", State.EspPlayers, function(val)
-	State.EspPlayers = val
-	updateAllEspVisibility()
-end)
+-- ============================================================================
+-- 6. МОДУЛЬ LOCK-ON (ПОИСК ЦЕЛИ + ЛУЧ И ТОЧКА УПРЕЖДЕНИЯ)
+-- ============================================================================
+local function clearLockBeam()
+	if lockBeam then lockBeam:Destroy(); lockBeam = nil end
+	if lockAtt0 then lockAtt0:Destroy(); lockAtt0 = nil end
+	if lockAtt1 then lockAtt1:Destroy(); lockAtt1 = nil end
+end
 
-createToggleBtn(4, "Цифры урона", State.DamageNumbers, function(val)
-	State.DamageNumbers = val
-end)
-
--- Кнопка блокировки UI
-local lockBtn = Instance.new("TextButton")
-lockBtn.LayoutOrder = 5
-lockBtn.Size = UDim2.new(0, 190, 0, 32)
-lockBtn.BackgroundColor3 = Color3.fromRGB(45, 50, 65)
-lockBtn.TextColor3 = Color3.fromRGB(220, 225, 240)
-lockBtn.Font = Enum.Font.GothamSemibold
-lockBtn.TextSize = 12
-lockBtn.Text = "🔓 UI: Разблокирован"
-lockBtn.Parent = buttonsContainer
-
-local lockCorner = Instance.new("UICorner")
-lockCorner.CornerRadius = UDim.new(0, 6)
-lockCorner.Parent = lockBtn
-
-trackConn(lockBtn.MouseButton1Click:Connect(function()
-	State.UILocked = not State.UILocked
-	if State.UILocked then
-		lockBtn.Text = "🔒 UI: Заблокирован"
-		lockBtn.BackgroundColor3 = Color3.fromRGB(165, 110, 35)
-		aimStroke.Color = Color3.fromRGB(220, 150, 50)
-	else
-		lockBtn.Text = "🔓 UI: Разблокирован"
-		lockBtn.BackgroundColor3 = Color3.fromRGB(45, 50, 65)
-		aimStroke.Color = Color3.fromRGB(80, 80, 95)
+local function updateLockBeam(targetPart: BasePart?, predictedWorldPos: Vector3?)
+	if STATE.Deactivated or STATE.ScriptLocked or not STATE.ShowLockBeam or not isLocking or not targetPart or not predictedWorldPos then
+		clearLockBeam()
+		return
 	end
-end))
 
--- Кнопка полной деактивации скрипта
-local unloadBtn = Instance.new("TextButton")
-unloadBtn.LayoutOrder = 6
-unloadBtn.Size = UDim2.new(0, 190, 0, 32)
-unloadBtn.BackgroundColor3 = Color3.fromRGB(155, 45, 45)
-unloadBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-unloadBtn.Font = Enum.Font.GothamBold
-unloadBtn.TextSize = 12
-unloadBtn.Text = "✖ Деактивировать скрипт"
-unloadBtn.Parent = buttonsContainer
+	local myChar = localPlayer.Character
+	local myRoot = myChar and getCharacterRoot(myChar)
+	if not myRoot then
+		clearLockBeam()
+		return
+	end
 
-local unloadCorner = Instance.new("UICorner")
-unloadCorner.CornerRadius = UDim.new(0, 6)
-unloadCorner.Parent = unloadBtn
+	if not lockBeam or not lockAtt0 or lockAtt0.Parent ~= myRoot or not lockAtt1 or lockAtt1.Parent ~= targetPart then
+		clearLockBeam()
+		local att0 = Instance.new("Attachment")
+		att0.Parent = myRoot
 
--- ==========================================
--- LOCK-ON SYSTEM (ПКМ ИЛИ КНОПКА AIM)
--- ==========================================
-local function getClosestTarget()
-	local viewportSize = camera.ViewportSize
+		local att1 = Instance.new("Attachment")
+		att1.Parent = targetPart
+
+		local leadDotGui = Instance.new("BillboardGui")
+		leadDotGui.Size = UDim2.fromOffset(14, 14)
+		leadDotGui.AlwaysOnTop = true
+		leadDotGui.LightInfluence = 0
+		leadDotGui.Parent = att1
+
+		local dot = Instance.new("Frame")
+		dot.Size = UDim2.fromScale(1, 1)
+		dot.BackgroundColor3 = COLORS.Red
+		dot.BorderSizePixel = 0
+		dot.Parent = leadDotGui
+
+		local dotCorner = Instance.new("UICorner")
+		dotCorner.CornerRadius = UDim.new(1, 0)
+		dotCorner.Parent = dot
+
+		local dotStroke = Instance.new("UIStroke")
+		dotStroke.Thickness = 1.5
+		dotStroke.Color = Color3.new(1, 1, 1)
+		dotStroke.Parent = dot
+
+		local beam = Instance.new("Beam")
+		beam.Attachment0 = att0
+		beam.Attachment1 = att1
+		beam.Width0 = 0.16
+		beam.Width1 = 0.08
+		beam.FaceCamera = true
+		beam.LightEmission = 1
+		beam.LightInfluence = 0
+		beam.Color = ColorSequence.new(COLORS.Cyan, COLORS.Red)
+		beam.Transparency = NumberSequence.new(0.15)
+		beam.Parent = myRoot
+
+		lockAtt0 = att0
+		lockAtt1 = att1
+		lockBeam = beam
+	end
+
+	if lockAtt1 then
+		lockAtt1.Position = targetPart.CFrame:PointToObjectSpace(predictedWorldPos)
+	end
+end
+
+local function isValidTarget(character: Model?): (boolean, BasePart?)
+	if not character or not character.Parent or character == localPlayer.Character then
+		return false, nil
+	end
+	local hum = character:FindFirstChildOfClass("Humanoid")
+	local targetPart = getTargetAimPart(character)
+	if not hum or hum.Health <= 0 or not targetPart then
+		return false, nil
+	end
+	return true, targetPart
+end
+
+local function findClosestTarget(): Model?
+	local activeCam = camera
+	if not activeCam then return nil end
+
+	local viewportSize = activeCam.ViewportSize
 	local screenCenter = Vector2.new(viewportSize.X * 0.5, viewportSize.Y * 0.5)
-	local closestPart = nil
-	local shortestDistance = Config.AimRadius
+	local camPos = activeCam.CFrame.Position
 
-	for model, data in pairs(TrackedModels) do
-		-- Наводимся на ботов (если включен ESP ботов) и на игроков (если включен ESP игроков)
-		local canTarget = (not data.isPlayer and State.EspBots) or (data.isPlayer and State.EspPlayers)
-		if canTarget and model.Parent then
-			local humanoid = model:FindFirstChildOfClass("Humanoid")
-			local part = model:FindFirstChild(Config.TargetPart)
-			if humanoid and humanoid.Health > 0 and part then
-				local screenPos, onScreen = camera:WorldToViewportPoint(part.Position)
-				if onScreen then
-					local dist = (Vector2.new(screenPos.X, screenPos.Y) - screenCenter).Magnitude
-					if dist < shortestDistance then
-						shortestDistance = dist
-						closestPart = part
+	local bestTarget: Model? = nil
+	local shortestScreenDist = STATE.LockRadiusPx
+
+	local function evaluateCandidate(char: Model?)
+		local valid, targetPart = isValidTarget(char)
+		if valid and targetPart and char then
+			local worldDist = (targetPart.Position - camPos).Magnitude
+			if worldDist <= STATE.LockMaxDistance then
+				local screenPos, onScreen = activeCam:WorldToViewportPoint(targetPart.Position)
+				if onScreen and screenPos.Z > 0 then
+					local distFromCenter = (Vector2.new(screenPos.X, screenPos.Y) - screenCenter).Magnitude
+					if distFromCenter < shortestScreenDist then
+						shortestScreenDist = distFromCenter
+						bestTarget = char
 					end
 				end
 			end
 		end
 	end
 
-	return closestPart
-end
-
-local function setAimingState(active)
-	if not State.AimbotEnabled then return end
-	State.IsAiming = active
-	if active then
-		lockedTarget = getClosestTarget()
-		aimBtn.Text = "AIM\nLOCKED"
-		aimBtn.BackgroundColor3 = Color3.fromRGB(45, 140, 85)
-	else
-		lockedTarget = nil
-		aimBtn.Text = "AIM\nOFF"
-		aimBtn.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player ~= localPlayer then
+			evaluateCandidate(player.Character)
+		end
 	end
-end
 
-trackConn(UserInputService.InputBegan:Connect(function(input, processed)
-	if processed then return end
-	if input.UserInputType == Enum.UserInputType.MouseButton2 then
-		setAimingState(true)
-	end
-end))
-
-trackConn(UserInputService.InputEnded:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseButton2 then
-		setAimingState(false)
-	end
-end))
-
-trackConn(aimBtn.MouseButton1Click:Connect(function()
-	if wasAimBtnDragged() then return end
-	setAimingState(not State.IsAiming)
-end))
-
--- ==========================================
--- ЕДИНЫЙ ЦИКЛ RENDERSTEPPED (AIMBOT + ЦИФРЫ УРОНА)
--- ==========================================
-trackConn(RunService.RenderStepped:Connect(function(dt)
-	if not State.ScriptActive then return end
-
-	-- 1. Обновление активных цифр урона
-	local dmgCount = #activeDmgList
-	if dmgCount > 0 then
-		for i = dmgCount, 1, -1 do
-			local item = activeDmgList[i]
-			item.elapsed += dt
-
-			if item.elapsed >= Config.DmgLifetime then
-				item.billboard.Enabled = false
-				table.remove(activeDmgList, i)
-				table.insert(inactiveDmgPool, item)
-			else
-				local progress = item.elapsed / Config.DmgLifetime
-				local currentY = Config.DmgFloatSpeed * (1 - (1 - progress) ^ 2)
-				item.part.Position = item.startPos + Vector3.new(item.offsetX, currentY, item.offsetZ)
-
-				if progress > 0.65 then
-					local fade = (progress - 0.65) / 0.35
-					item.label.TextTransparency = fade
-					item.label.TextStrokeTransparency = 0.2 + (0.8 * fade)
+	if STATE.LockIncludeBots then
+		for botModel, _ in pairs(botOverlays) do
+			evaluateCandidate(botModel)
+		end
+		for _, desc in ipairs(Workspace:GetDescendants()) do
+			if desc:IsA("Humanoid") and desc.Parent and desc.Parent:IsA("Model") then
+				if Players:GetPlayerFromCharacter(desc.Parent) == nil then
+					evaluateCandidate(desc.Parent)
 				end
 			end
 		end
 	end
 
-	-- 2. Доводка камеры (Aimbot)
-	if State.AimbotEnabled and State.IsAiming then
-		if not lockedTarget or not lockedTarget.Parent then
-			lockedTarget = getClosestTarget()
-		end
+	return bestTarget
+end
 
-		if lockedTarget then
-			local hum = lockedTarget.Parent:FindFirstChildOfClass("Humanoid")
-			if not hum or hum.Health <= 0 then
-				lockedTarget = getClosestTarget()
-			else
-				local currentCF = camera.CFrame
-				local targetCF = CFrame.lookAt(currentCF.Position, lockedTarget.Position)
-				camera.CFrame = currentCF:Lerp(targetCF, Config.Smoothness)
-			end
-		end
+-- ============================================================================
+-- 7. ПОСТРОЕНИЕ НЕОНОВОГО МЕНЮ + БЛОКИРОВКА СКРИПТА + ДЕАКТИВАЦИЯ
+-- ============================================================================
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "NeonDevSuiteV35"
+screenGui.ResetOnSpawn = false
+screenGui.IgnoreGuiInset = true
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.Parent = playerGui
+
+local fovCircle = Instance.new("Frame")
+fovCircle.AnchorPoint = Vector2.new(0.5, 0.5)
+fovCircle.Position = UDim2.fromScale(0.5, 0.5)
+fovCircle.Size = UDim2.fromOffset(STATE.LockRadiusPx * 2, STATE.LockRadiusPx * 2)
+fovCircle.BackgroundTransparency = 1
+fovCircle.Visible = STATE.LockEnabled and STATE.ShowFovCircle
+fovCircle.Parent = screenGui
+
+local fovCorner = Instance.new("UICorner")
+fovCorner.CornerRadius = UDim.new(1, 0)
+fovCorner.Parent = fovCircle
+
+local fovStroke, _ = attachDashedStroke(fovCircle, 1.8, getAccentColor())
+fovStroke.Transparency = 0.3
+
+local lockStatusLabel = Instance.new("TextLabel")
+lockStatusLabel.Size = UDim2.fromOffset(260, 22)
+lockStatusLabel.AnchorPoint = Vector2.new(0.5, 0)
+lockStatusLabel.Position = UDim2.new(0.5, 0, 1, 6)
+lockStatusLabel.BackgroundTransparency = 1
+lockStatusLabel.Text = ""
+lockStatusLabel.TextColor3 = COLORS.Red
+lockStatusLabel.TextStrokeTransparency = 0.35
+lockStatusLabel.Font = Enum.Font.GothamBlack
+lockStatusLabel.TextSize = 12
+lockStatusLabel.Parent = fovCircle
+
+local openPill = Instance.new("TextButton")
+openPill.Size = UDim2.fromOffset(142, 38)
+openPill.Position = UDim2.new(0, 18, 0.5, -42)
+openPill.BackgroundColor3 = COLORS.BgDark
+openPill.BackgroundTransparency = 0.1
+openPill.Text = "⚡ DEV SUITE"
+openPill.TextColor3 = getAccentColor()
+openPill.Font = Enum.Font.GothamBlack
+openPill.TextSize = 13
+openPill.AutoButtonColor = false
+openPill.Parent = screenGui
+
+local pillCorner = Instance.new("UICorner")
+pillCorner.CornerRadius = UDim.new(1, 0)
+pillCorner.Parent = openPill
+
+local pillStroke, pillGrad = attachDashedStroke(openPill, 2.2, getAccentColor())
+
+local lockPill = Instance.new("TextButton")
+lockPill.Size = UDim2.fromOffset(142, 38)
+lockPill.Position = UDim2.new(0, 18, 0.5, 6)
+lockPill.BackgroundColor3 = COLORS.BgDark
+lockPill.BackgroundTransparency = 0.1
+lockPill.Text = "🎯 LOCK: OFF"
+lockPill.TextColor3 = COLORS.TextDim
+lockPill.Font = Enum.Font.GothamBlack
+lockPill.TextSize = 12
+lockPill.AutoButtonColor = false
+lockPill.Parent = screenGui
+
+local lockPillCorner = Instance.new("UICorner")
+lockPillCorner.CornerRadius = UDim.new(1, 0)
+lockPillCorner.Parent = lockPill
+
+local lockPillStroke = Instance.new("UIStroke")
+lockPillStroke.Thickness = 2.0
+lockPillStroke.Color = COLORS.TextDim
+lockPillStroke.Parent = lockPill
+
+local function updateLockPillVisuals()
+	if STATE.ScriptLocked then
+		lockPill.Text = "🔒 LOCKED"
+		lockPill.TextColor3 = COLORS.Amber
+		lockPillStroke.Color = COLORS.Amber
+	elseif isLocking and STATE.LockEnabled then
+		lockPill.Text = "🎯 LOCK: ON"
+		lockPill.TextColor3 = getAccentColor()
+		lockPillStroke.Color = getAccentColor()
+	else
+		lockPill.Text = "🎯 LOCK: OFF"
+		lockPill.TextColor3 = COLORS.TextDim
+		lockPillStroke.Color = COLORS.TextDim
 	end
-end))
+end
 
--- ==========================================
--- ПОЛНАЯ ДЕАКТИВАЦИЯ СКРИПТА (KILL-SWITCH)
--- ==========================================
-unloadBtn.MouseButton1Click:Connect(function()
-	State.ScriptActive = false
-	State.IsAiming = false
-	lockedTarget = nil
+local function setLockActive(active: boolean)
+	if not STATE.LockEnabled or STATE.ScriptLocked then
+		active = false
+	end
+	isLocking = active
+	if active then
+		currentTarget = findClosestTarget()
+		smoothedLookDir = nil
+	else
+		currentTarget = nil
+		smoothedLookDir = nil
+		clearLockBeam()
+		lockStatusLabel.Text = ""
+	end
+	updateLockPillVisuals()
+end
 
-	for _, conn in ipairs(Connections) do
+local mainFrame = Instance.new("Frame")
+mainFrame.Size = UDim2.fromOffset(435, 360)
+mainFrame.Position = UDim2.new(0.5, -217, 0.5, -180)
+mainFrame.BackgroundColor3 = COLORS.BgDark
+mainFrame.BackgroundTransparency = 0.05
+mainFrame.Visible = false
+mainFrame.Parent = screenGui
+
+local mainCorner = Instance.new("UICorner")
+mainCorner.CornerRadius = UDim.new(0, 14)
+mainCorner.Parent = mainFrame
+
+local mainStroke, mainBorderGrad = attachDashedStroke(mainFrame, 2.6, getAccentColor())
+
+local uiScale = Instance.new("UIScale")
+uiScale.Scale = 0.88
+uiScale.Parent = mainFrame
+
+local header = Instance.new("Frame")
+header.Size = UDim2.new(1, 0, 0, 44)
+header.BackgroundColor3 = COLORS.BgPanel
+header.BorderSizePixel = 0
+header.Parent = mainFrame
+
+local headerCorner = Instance.new("UICorner")
+headerCorner.CornerRadius = UDim.new(0, 14)
+headerCorner.Parent = header
+
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Size = UDim2.new(0, 145, 1, 0)
+titleLabel.Position = UDim2.fromOffset(12, 0)
+titleLabel.BackgroundTransparency = 1
+titleLabel.Text = "⚡ NEON v3.5"
+titleLabel.TextColor3 = COLORS.TextMain
+titleLabel.Font = Enum.Font.GothamBlack
+titleLabel.TextSize = 13
+titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+titleLabel.Parent = header
+
+-- Кнопка блокировки/разблокировки скрипта (🔒 LOCK / 🔓 UNLOCK)
+local scriptLockBtn = Instance.new("TextButton")
+scriptLockBtn.Size = UDim2.fromOffset(84, 26)
+scriptLockBtn.Position = UDim2.new(1, -254, 0.5, -13)
+scriptLockBtn.BackgroundColor3 = COLORS.BgElement
+scriptLockBtn.Text = "🔓 UNLOCK"
+scriptLockBtn.TextColor3 = COLORS.Cyan
+scriptLockBtn.Font = Enum.Font.GothamBold
+scriptLockBtn.TextSize = 10
+scriptLockBtn.Parent = header
+
+local sLockCorner = Instance.new("UICorner")
+sLockCorner.CornerRadius = UDim.new(0, 7)
+sLockCorner.Parent = scriptLockBtn
+
+local sLockStroke = Instance.new("UIStroke")
+sLockStroke.Thickness = 1.2
+sLockStroke.Color = COLORS.Cyan
+sLockStroke.Parent = scriptLockBtn
+
+-- Кнопка переключения цвета пунктира (LIME / RED)
+local themeSwitchBtn = Instance.new("TextButton")
+themeSwitchBtn.Size = UDim2.fromOffset(68, 26)
+themeSwitchBtn.Position = UDim2.new(1, -164, 0.5, -13)
+themeSwitchBtn.BackgroundColor3 = COLORS.BgElement
+themeSwitchBtn.Text = "🟢 LIME"
+themeSwitchBtn.TextColor3 = getAccentColor()
+themeSwitchBtn.Font = Enum.Font.GothamBold
+themeSwitchBtn.TextSize = 10
+themeSwitchBtn.Parent = header
+
+local tBtnCorner = Instance.new("UICorner")
+tBtnCorner.CornerRadius = UDim.new(0, 7)
+tBtnCorner.Parent = themeSwitchBtn
+
+local tBtnStroke = Instance.new("UIStroke")
+tBtnStroke.Thickness = 1.2
+tBtnStroke.Color = getAccentColor()
+tBtnStroke.Parent = themeSwitchBtn
+
+-- Кнопка полной деактивации скрипта (🛑 OFF)
+local deactivateBtn = Instance.new("TextButton")
+deactivateBtn.Size = UDim2.fromOffset(54, 26)
+deactivateBtn.Position = UDim2.new(1, -90, 0.5, -13)
+deactivateBtn.BackgroundColor3 = Color3.fromRGB(55, 16, 24)
+deactivateBtn.Text = "🛑 OFF"
+deactivateBtn.TextColor3 = COLORS.Red
+deactivateBtn.Font = Enum.Font.GothamBlack
+deactivateBtn.TextSize = 10
+deactivateBtn.Parent = header
+
+local deactCorner = Instance.new("UICorner")
+deactCorner.CornerRadius = UDim.new(0, 7)
+deactCorner.Parent = deactivateBtn
+
+local deactStroke = Instance.new("UIStroke")
+deactStroke.Thickness = 1.3
+deactStroke.Color = COLORS.Red
+deactStroke.Parent = deactivateBtn
+
+-- Кнопка сворачивания окна
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.fromOffset(26, 26)
+closeBtn.Position = UDim2.new(1, -32, 0.5, -13)
+closeBtn.BackgroundColor3 = COLORS.BgElement
+closeBtn.Text = "✕"
+closeBtn.TextColor3 = COLORS.TextDim
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextSize = 12
+closeBtn.Parent = header
+
+local closeCorner = Instance.new("UICorner")
+closeCorner.CornerRadius = UDim.new(0, 7)
+closeCorner.Parent = closeBtn
+
+local tabBar = Instance.new("Frame")
+tabBar.Size = UDim2.new(1, -24, 0, 34)
+tabBar.Position = UDim2.fromOffset(12, 52)
+tabBar.BackgroundColor3 = COLORS.BgPanel
+tabBar.BorderSizePixel = 0
+tabBar.Parent = mainFrame
+
+local tabBarCorner = Instance.new("UICorner")
+tabBarCorner.CornerRadius = UDim.new(0, 9)
+tabBarCorner.Parent = tabBar
+
+local tabIndicator = Instance.new("Frame")
+tabIndicator.Size = UDim2.new(0.25, -4, 1, -6)
+tabIndicator.Position = UDim2.fromOffset(2, 3)
+tabIndicator.BackgroundColor3 = getAccentColor()
+tabIndicator.BackgroundTransparency = 0.82
+tabIndicator.BorderSizePixel = 0
+tabIndicator.Parent = tabBar
+
+local indCorner = Instance.new("UICorner")
+indCorner.CornerRadius = UDim.new(0, 7)
+indCorner.Parent = tabIndicator
+
+local indStroke = Instance.new("UIStroke")
+indStroke.Thickness = 1.2
+indStroke.Color = getAccentColor()
+indStroke.Parent = tabIndicator
+
+local pagesHolder = Instance.new("Frame")
+pagesHolder.Size = UDim2.new(1, -24, 1, -100)
+pagesHolder.Position = UDim2.fromOffset(12, 92)
+pagesHolder.BackgroundTransparency = 1
+pagesHolder.Parent = mainFrame
+
+-- Полупрозрачная плашка блокировки поверх настроек при залоченном скрипте
+local lockShield = Instance.new("TextLabel")
+lockShield.Size = UDim2.fromScale(1, 1)
+lockShield.BackgroundColor3 = COLORS.BgDark
+lockShield.BackgroundTransparency = 0.35
+lockShield.Text = "🔒 СКРИПТ ЗАБЛОКИРОВАН\nНажмите [🔒 LOCKED] вверху, чтобы разблокировать"
+lockShield.TextColor3 = COLORS.Amber
+lockShield.Font = Enum.Font.GothamBold
+lockShield.TextSize = 13
+lockShield.ZIndex = 20
+lockShield.Visible = false
+lockShield.Active = true -- Перехватывает клики по настройкам
+lockShield.Parent = pagesHolder
+
+local shieldCorner = Instance.new("UICorner")
+shieldCorner.CornerRadius = UDim.new(0, 10)
+shieldCorner.Parent = lockShield
+
+local tabNames = { "🎯 LOCK", "👥 PLAYERS", "🤖 BOTS", "⚡ PHYS" }
+local pages: { ScrollingFrame } = {}
+local tabButtons: { TextButton } = {}
+local activeTabIndex = 1
+
+local function switchTab(index: number)
+	activeTabIndex = index
+	local accent = getAccentColor()
+	for i, page in ipairs(pages) do
+		page.Visible = (i == index)
+		tabButtons[i].TextColor3 = (i == index) and accent or COLORS.TextDim
+	end
+	quickTween(tabIndicator, 0.24, {
+		Position = UDim2.new((index - 1) * 0.25, 2, 0, 3),
+		BackgroundColor3 = accent,
+	})
+	indStroke.Color = accent
+end
+
+for i, name in ipairs(tabNames) do
+	local btn = Instance.new("TextButton")
+	btn.Size = UDim2.new(0.25, 0, 1, 0)
+	btn.Position = UDim2.fromScale((i - 1) * 0.25, 0)
+	btn.BackgroundTransparency = 1
+	btn.Text = name
+	btn.TextColor3 = (i == 1) and getAccentColor() or COLORS.TextDim
+	btn.Font = Enum.Font.GothamBold
+	btn.TextSize = 11
+	btn.ZIndex = 2
+	btn.Parent = tabBar
+	table.insert(tabButtons, btn)
+
+	local page = Instance.new("ScrollingFrame")
+	page.Size = UDim2.fromScale(1, 1)
+	page.BackgroundTransparency = 1
+	page.BorderSizePixel = 0
+	page.ScrollBarThickness = 3
+	page.ScrollBarImageColor3 = getAccentColor()
+	page.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	page.CanvasSize = UDim2.new(0, 0, 0, 0)
+	page.Visible = (i == 1)
+	page.Parent = pagesHolder
+
+	local listLayout = Instance.new("UIListLayout")
+	listLayout.Padding = UDim.new(0, 8)
+	listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	listLayout.Parent = page
+
+	local pad = Instance.new("UIPadding")
+	pad.PaddingBottom = UDim.new(0, 8)
+	pad.Parent = page
+
+	table.insert(pages, page)
+	btn.MouseButton1Click:Connect(function()
+		switchTab(i)
+	end)
+end
+
+-- Переключение блокировки / разблокировки скрипта
+local function setScriptLocked(locked: boolean)
+	STATE.ScriptLocked = locked
+	lockShield.Visible = locked
+
+	if locked then
+		-- Ставим наводку камеры на паузу и фиксируем кнопки
+		smoothedLookDir = nil
+		clearLockBeam()
+		scriptLockBtn.Text = "🔒 LOCKED"
+		scriptLockBtn.TextColor3 = COLORS.Amber
+		sLockStroke.Color = COLORS.Amber
+		openPill.Text = "🔒 DEV SUITE"
+		openPill.TextColor3 = COLORS.Amber
+		pillStroke.Color = COLORS.Amber
+		lockStatusLabel.Text = "LOCK-ON FROZEN [SCRIPT LOCKED]"
+		lockStatusLabel.TextColor3 = COLORS.Amber
+	else
+		local accent = getAccentColor()
+		scriptLockBtn.Text = "🔓 UNLOCK"
+		scriptLockBtn.TextColor3 = COLORS.Cyan
+		sLockStroke.Color = COLORS.Cyan
+		openPill.Text = "⚡ DEV SUITE"
+		openPill.TextColor3 = accent
+		pillStroke.Color = accent
+		lockStatusLabel.Text = ""
+	end
+	updateLockPillVisuals()
+end
+
+scriptLockBtn.MouseButton1Click:Connect(function()
+	setScriptLocked(not STATE.ScriptLocked)
+end)
+
+local function applyDashedTheme()
+	local accent = getAccentColor()
+	themeSwitchBtn.Text = (STATE.DashedColorMode == "LIME") and "🟢 LIME" or "🔴 RED"
+	themeSwitchBtn.TextColor3 = accent
+	tBtnStroke.Color = accent
+
+	if not STATE.ScriptLocked then
+		openPill.TextColor3 = accent
+		pillStroke.Color = accent
+	end
+	mainStroke.Color = accent
+	fovStroke.Color = accent
+	tabIndicator.BackgroundColor3 = accent
+	indStroke.Color = accent
+	tabButtons[activeTabIndex].TextColor3 = accent
+
+	updateLockPillVisuals()
+
+	for _, page in ipairs(pages) do
+		page.ScrollBarImageColor3 = accent
+	end
+
+	for _, data in pairs(playerOverlays) do
+		data.boxStroke.Color = accent
+		data.distLabel.TextColor3 = accent
+		data.highlight.OutlineColor = accent
+		if data.tracerBeam then
+			data.tracerBeam.Color = ColorSequence.new(accent)
+		end
+		syncEntityOverlay(data)
+	end
+
+	for _, cb in ipairs(uiRefreshCallbacks) do
+		cb()
+	end
+end
+
+themeSwitchBtn.MouseButton1Click:Connect(function()
+	if STATE.ScriptLocked then return end
+	STATE.DashedColorMode = (STATE.DashedColorMode == "LIME") and "RED" or "LIME"
+	applyDashedTheme()
+end)
+
+-- ============================================================================
+-- 8. ПОЛНАЯ ДЕАКТИВАЦИЯ СКРИПТА (ОЧИСТКА ВСЕХ РЕСУРСОВ)
+-- ============================================================================
+local function deactivateScript()
+	if STATE.Deactivated then return end
+	STATE.Deactivated = true
+	isLocking = false
+	currentTarget = nil
+
+	pcall(function()
+		RunService:UnbindFromRenderStep("NeonLockOnV35")
+	end)
+
+	for _, conn in ipairs(globalConnections) do
 		if conn.Connected then
 			conn:Disconnect()
 		end
 	end
-	table.clear(Connections)
+	table.clear(globalConnections)
 
-	for model in pairs(TrackedModels) do
-		cleanupModel(model)
+	for player, conn in pairs(playerConnections) do
+		if conn.Connected then
+			conn:Disconnect()
+		end
+		playerConnections[player] = nil
 	end
 
-	if dmgFolder then
-		dmgFolder:Destroy()
+	for _, data in pairs(playerOverlays) do
+		removeEntityOverlay(data)
+	end
+	table.clear(playerOverlays)
+
+	for _, data in pairs(botOverlays) do
+		removeEntityOverlay(data)
+	end
+	table.clear(botOverlays)
+
+	clearLockBeam()
+	disableNoclip()
+
+	local char = localPlayer.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if hum then
+		hum.PlatformStand = false
+		hum.WalkSpeed = 16
+		hum.JumpPower = 50
 	end
 
-	if screenGui then
+	if screenGui and screenGui.Parent then
 		screenGui:Destroy()
 	end
+
+	if script then
+		script.Disabled = true
+	end
+end
+
+deactivateBtn.MouseButton1Click:Connect(deactivateScript)
+
+-- ============================================================================
+-- 9. ФАБРИКА КОНТРОЛОВ И НАПОЛНЕНИЕ 4 ВКЛАДОК
+-- ============================================================================
+local function addToggle(parent: Instance, title: string, getVal: () -> boolean, setVal: (boolean) -> ())
+	local row = Instance.new("Frame")
+	row.Size = UDim2.new(1, -6, 0, 36)
+	row.BackgroundColor3 = COLORS.BgElement
+	row.BorderSizePixel = 0
+	row.Parent = parent
+
+	local rCorner = Instance.new("UICorner")
+	rCorner.CornerRadius = UDim.new(0, 8)
+	rCorner.Parent = row
+
+	local lbl = Instance.new("TextLabel")
+	lbl.Size = UDim2.new(1, -64, 1, 0)
+	lbl.Position = UDim2.fromOffset(12, 0)
+	lbl.BackgroundTransparency = 1
+	lbl.Text = title
+	lbl.TextColor3 = COLORS.TextMain
+	lbl.Font = Enum.Font.GothamMedium
+	lbl.TextSize = 12
+	lbl.TextXAlignment = Enum.TextXAlignment.Left
+	lbl.Parent = row
+
+	local switchBg = Instance.new("TextButton")
+	switchBg.Size = UDim2.fromOffset(42, 20)
+	switchBg.Position = UDim2.new(1, -52, 0.5, -10)
+	switchBg.BackgroundColor3 = COLORS.BgDark
+	switchBg.Text = ""
+	switchBg.AutoButtonColor = false
+	switchBg.Parent = row
+
+	local sCorner = Instance.new("UICorner")
+	sCorner.CornerRadius = UDim.new(1, 0)
+	sCorner.Parent = switchBg
+
+	local sStroke = Instance.new("UIStroke")
+	sStroke.Thickness = 1.3
+	sStroke.Color = COLORS.TextDim
+	sStroke.Parent = switchBg
+
+	local knob = Instance.new("Frame")
+	knob.Size = UDim2.fromOffset(14, 14)
+	knob.Position = UDim2.fromOffset(3, 3)
+	knob.BackgroundColor3 = COLORS.TextDim
+	knob.BorderSizePixel = 0
+	knob.Parent = switchBg
+
+	local kCorner = Instance.new("UICorner")
+	kCorner.CornerRadius = UDim.new(1, 0)
+	kCorner.Parent = knob
+
+	local function refresh()
+		local st = getVal()
+		local accent = getAccentColor()
+		quickTween(knob, 0.18, {
+			Position = if st then UDim2.fromOffset(25, 3) else UDim2.fromOffset(3, 3),
+			BackgroundColor3 = if st then accent else COLORS.TextDim,
+		})
+		sStroke.Color = if st then accent else COLORS.TextDim
+	end
+
+	switchBg.MouseButton1Click:Connect(function()
+		if STATE.ScriptLocked then return end
+		setVal(not getVal())
+		refresh()
+	end)
+
+	table.insert(uiRefreshCallbacks, refresh)
+	refresh()
+end
+
+local function addSlider(parent: Instance, title: string, minV: number, maxV: number, decimals: number, getVal: () -> number, setVal: (number) -> ())
+	local box = Instance.new("Frame")
+	box.Size = UDim2.new(1, -6, 0, 48)
+	box.BackgroundColor3 = COLORS.BgElement
+	box.BorderSizePixel = 0
+	box.Parent = parent
+
+	local bCorner = Instance.new("UICorner")
+	bCorner.CornerRadius = UDim.new(0, 8)
+	bCorner.Parent = box
+
+	local lbl = Instance.new("TextLabel")
+	lbl.Size = UDim2.new(0.68, 0, 0, 20)
+	lbl.Position = UDim2.fromOffset(12, 4)
+	lbl.BackgroundTransparency = 1
+	lbl.Text = title
+	lbl.TextColor3 = COLORS.TextMain
+	lbl.Font = Enum.Font.GothamMedium
+	lbl.TextSize = 12
+	lbl.TextXAlignment = Enum.TextXAlignment.Left
+	lbl.Parent = box
+
+	local valLbl = Instance.new("TextLabel")
+	valLbl.Size = UDim2.new(0.28, -12, 0, 20)
+	valLbl.Position = UDim2.new(0.72, 0, 0, 4)
+	valLbl.BackgroundTransparency = 1
+	valLbl.TextColor3 = getAccentColor()
+	valLbl.Font = Enum.Font.GothamBold
+	valLbl.TextSize = 12
+	valLbl.TextXAlignment = Enum.TextXAlignment.Right
+	valLbl.Parent = box
+
+	local track = Instance.new("Frame")
+	track.Size = UDim2.new(1, -24, 0, 8)
+	track.Position = UDim2.fromOffset(12, 30)
+	track.BackgroundColor3 = COLORS.BgDark
+	track.BorderSizePixel = 0
+	track.Parent = box
+
+	local tCorner = Instance.new("UICorner")
+	tCorner.CornerRadius = UDim.new(1, 0)
+	tCorner.Parent = track
+
+	local fill = Instance.new("Frame")
+	fill.Size = UDim2.fromScale(0.5, 1)
+	fill.BackgroundColor3 = getAccentColor()
+	fill.BorderSizePixel = 0
+	fill.Parent = track
+
+	local fCorner = Instance.new("UICorner")
+	fCorner.CornerRadius = UDim.new(1, 0)
+	fCorner.Parent = fill
+
+	local function refresh()
+		local cur = math.clamp(getVal(), minV, maxV)
+		local ratio = (cur - minV) / (maxV - minV)
+		fill.Size = UDim2.fromScale(ratio, 1)
+		fill.BackgroundColor3 = getAccentColor()
+		valLbl.TextColor3 = getAccentColor()
+		valLbl.Text = string.format("%." .. decimals .. "f", cur)
+	end
+
+	local dragging = false
+	local function updateFromInput(inputPos: Vector3)
+		if STATE.ScriptLocked then return end
+		local absPos = track.AbsolutePosition.X
+		local absSize = track.AbsoluteSize.X
+		if absSize <= 0 then return end
+		local pct = math.clamp((inputPos.X - absPos) / absSize, 0, 1)
+		local mult = 10 ^ decimals
+		local newVal = math.round((minV + (maxV - minV) * pct) * mult) / mult
+		setVal(newVal)
+		refresh()
+	end
+
+	track.InputBegan:Connect(function(input)
+		if STATE.ScriptLocked then return end
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+			updateFromInput(input.Position)
+		end
+	end)
+
+	table.insert(globalConnections, UserInputService.InputChanged:Connect(function(input)
+		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+			updateFromInput(input.Position)
+		end
+	end))
+
+	table.insert(globalConnections, UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = false
+		end
+	end))
+
+	table.insert(uiRefreshCallbacks, refresh)
+	refresh()
+end
+
+local function addActionButton(parent: Instance, getTitle: () -> string, onClick: () -> ())
+	local btn = Instance.new("TextButton")
+	btn.Size = UDim2.new(1, -6, 0, 34)
+	btn.BackgroundColor3 = COLORS.BgElement
+	btn.Text = getTitle()
+	btn.TextColor3 = getAccentColor()
+	btn.Font = Enum.Font.GothamBold
+	btn.TextSize = 12
+	btn.AutoButtonColor = false
+	btn.Parent = parent
+
+	local bCorner = Instance.new("UICorner")
+	bCorner.CornerRadius = UDim.new(0, 8)
+	bCorner.Parent = btn
+
+	local bStroke = Instance.new("UIStroke")
+	bStroke.Thickness = 1.2
+	bStroke.Color = getAccentColor()
+	bStroke.Transparency = 0.4
+	bStroke.Parent = btn
+
+	local function refresh()
+		local accent = getAccentColor()
+		btn.Text = getTitle()
+		btn.TextColor3 = accent
+		bStroke.Color = accent
+	end
+	table.insert(uiRefreshCallbacks, refresh)
+
+	btn.MouseButton1Click:Connect(function()
+		if STATE.ScriptLocked then return end
+		local accent = getAccentColor()
+		quickTween(btn, 0.1, { BackgroundColor3 = accent, TextColor3 = COLORS.BgDark })
+		task.delay(0.12, function()
+			if not STATE.Deactivated and btn.Parent then
+				quickTween(btn, 0.18, { BackgroundColor3 = COLORS.BgElement, TextColor3 = getAccentColor() })
+			end
+		end)
+		onClick()
+		refresh()
+	end)
+end
+
+-- Вкладка 1: LOCK-ON
+local lockPage = pages[1]
+addToggle(lockPage, "Активировать систему Lock-On", function() return STATE.LockEnabled end, function(v)
+	STATE.LockEnabled = v
+	fovCircle.Visible = v and STATE.ShowFovCircle
+	if not v then setLockActive(false) end
 end)
+
+local boneRow = Instance.new("Frame")
+boneRow.Size = UDim2.new(1, -6, 0, 38)
+boneRow.BackgroundTransparency = 1
+boneRow.Parent = lockPage
+
+local headTargetBtn = Instance.new("TextButton")
+headTargetBtn.Size = UDim2.new(0.49, 0, 1, 0)
+headTargetBtn.Position = UDim2.fromScale(0, 0)
+headTargetBtn.BackgroundColor3 = COLORS.BgElement
+headTargetBtn.Font = Enum.Font.GothamBold
+headTargetBtn.TextSize = 12
+headTargetBtn.AutoButtonColor = false
+headTargetBtn.Parent = boneRow
+
+local headCorner = Instance.new("UICorner")
+headCorner.CornerRadius = UDim.new(0, 8)
+headCorner.Parent = headTargetBtn
+
+local headStroke = Instance.new("UIStroke")
+headStroke.Thickness = 1.6
+headStroke.Parent = headTargetBtn
+
+local bodyTargetBtn = Instance.new("TextButton")
+bodyTargetBtn.Size = UDim2.new(0.49, 0, 1, 0)
+bodyTargetBtn.Position = UDim2.fromScale(0.51, 0)
+bodyTargetBtn.BackgroundColor3 = COLORS.BgElement
+bodyTargetBtn.Font = Enum.Font.GothamBold
+bodyTargetBtn.TextSize = 12
+bodyTargetBtn.AutoButtonColor = false
+bodyTargetBtn.Parent = boneRow
+
+local bodyCorner = Instance.new("UICorner")
+bodyCorner.CornerRadius = UDim.new(0, 8)
+bodyCorner.Parent = bodyTargetBtn
+
+local bodyStroke = Instance.new("UIStroke")
+bodyStroke.Thickness = 1.6
+bodyStroke.Parent = bodyTargetBtn
+
+local function refreshBoneButtons()
+	local accent = getAccentColor()
+	local isHead = (STATE.LockTargetPart == "Head")
+
+	headTargetBtn.Text = if isHead then "✓ 🧠 ГОЛОВА" else "🧠 ГОЛОВА"
+	headTargetBtn.TextColor3 = if isHead then COLORS.BgDark else COLORS.TextDim
+	headTargetBtn.BackgroundColor3 = if isHead then accent else COLORS.BgElement
+	headStroke.Color = if isHead then accent else COLORS.TextDim
+
+	bodyTargetBtn.Text = if not isHead then "✓ 🛡️ ТЕЛО" else "🛡️ ТЕЛО"
+	bodyTargetBtn.TextColor3 = if not isHead then COLORS.BgDark else COLORS.TextDim
+	bodyTargetBtn.BackgroundColor3 = if not isHead then accent else COLORS.BgElement
+	bodyStroke.Color = if not isHead then accent else COLORS.TextDim
+end
+
+headTargetBtn.MouseButton1Click:Connect(function()
+	if STATE.ScriptLocked then return end
+	STATE.LockTargetPart = "Head"
+	refreshBoneButtons()
+end)
+
+bodyTargetBtn.MouseButton1Click:Connect(function()
+	if STATE.ScriptLocked then return end
+	STATE.LockTargetPart = "HumanoidRootPart"
+	refreshBoneButtons()
+end)
+
+table.insert(uiRefreshCallbacks, refreshBoneButtons)
+refreshBoneButtons()
+
+addToggle(lockPage, "Упреждение движения (вперёд цели)", function() return STATE.LockPredictionEnabled end, function(v)
+	STATE.LockPredictionEnabled = v
+end)
+addSlider(lockPage, "Сила упреждения вперёд (сек)", 0.00, 0.60, 2, function() return STATE.LockPredictionTime end, function(v)
+	STATE.LockPredictionTime = v
+end)
+addToggle(lockPage, "Авто-захват при ЛКМ / нажатии экрана", function() return STATE.LockOnFire end, function(v)
+	STATE.LockOnFire = v
+end)
+addToggle(lockPage, "Захват ботов и манекенов (NPC)", function() return STATE.LockIncludeBots end, function(v)
+	STATE.LockIncludeBots = v
+end)
+addToggle(lockPage, "Режим Toggle для ПКМ / E", function() return STATE.LockToggleMode end, function(v)
+	STATE.LockToggleMode = v
+	setLockActive(false)
+end)
+addToggle(lockPage, "Показывать пунктирный круг FOV", function() return STATE.ShowFovCircle end, function(v)
+	STATE.ShowFovCircle = v
+	fovCircle.Visible = STATE.LockEnabled and v
+end)
+addToggle(lockPage, "Луч захвата цели (Lock Beam)", function() return STATE.ShowLockBeam end, function(v)
+	STATE.ShowLockBeam = v
+	if not v then clearLockBeam() end
+end)
+addSlider(lockPage, "Радиус поиска цели (px)", 80, 480, 0, function() return STATE.LockRadiusPx end, function(v)
+	STATE.LockRadiusPx = v
+	fovCircle.Size = UDim2.fromOffset(v * 2, v * 2)
+end)
+addSlider(lockPage, "Плавность доводки камеры", 0.05, 1.0, 2, function() return STATE.LockSmoothness end, function(v)
+	STATE.LockSmoothness = v
+end)
+
+-- Вкладка 2: PLAYERS
+local function cycleDetailMode()
+	if STATE.EspDetailMode == "FULL" then
+		STATE.EspDetailMode = "COMPACT"
+	elseif STATE.EspDetailMode == "COMPACT" then
+		STATE.EspDetailMode = "MINIMAL"
+	else
+		STATE.EspDetailMode = "FULL"
+	end
+	refreshAllOverlayLayouts()
+	for _, cb in ipairs(uiRefreshCallbacks) do cb() end
+end
+
+local function getDetailButtonLabel(): string
+	if STATE.EspDetailMode == "FULL" then
+		return "📋 Плашки: ПОЛНЫЕ (Имя+HP+м)"
+	elseif STATE.EspDetailMode == "COMPACT" then
+		return "📋 Плашки: КОМПАКТ (Имя+HP)"
+	else
+		return "📋 Плашки: МИНИ (Только полоска)"
+	end
+end
+
+local playersPage = pages[2]
+addToggle(playersPage, "⚡ Включить весь ESP игроков", function() return STATE.PlayerMasterEsp end, function(v)
+	STATE.PlayerMasterEsp = v
+	if not v then
+		for _, data in pairs(playerOverlays) do
+			data.billboard.Enabled = false
+			data.highlight.Enabled = false
+			data.sparkEmitter.Enabled = false
+			data.auraEmitter.Enabled = false
+			destroyTracer(data)
+		end
+	end
+end)
+addToggle(playersPage, "Оверлей и плашки игроков", function() return STATE.PlayerOverlayEnabled end, function(v)
+	STATE.PlayerOverlayEnabled = v
+	for _, data in pairs(playerOverlays) do
+		data.billboard.Enabled = STATE.PlayerMasterEsp and v and data.isVisible
+	end
+end)
+addActionButton(playersPage, getDetailButtonLabel, cycleDetailMode)
+addSlider(playersPage, "Размер плашек ESP (масштаб)", 0.55, 1.30, 2, function() return STATE.EspScale end, function(v)
+	STATE.EspScale = v
+	refreshAllOverlayLayouts()
+	for _, cb in ipairs(uiRefreshCallbacks) do cb() end
+end)
+addToggle(playersPage, "Прерывистая 3D-линия до игроков", function() return STATE.PlayerDashedTracers end, function(v)
+	STATE.PlayerDashedTracers = v
+	if not v then
+		for _, data in pairs(playerOverlays) do destroyTracer(data) end
+	end
+end)
+addToggle(playersPage, "Неоновая обводка игроков (Chams)", function() return STATE.PlayerHighlight end, function(v)
+	STATE.PlayerHighlight = v
+	for _, data in pairs(playerOverlays) do
+		data.highlight.Enabled = STATE.PlayerMasterEsp and v and data.isVisible
+	end
+end)
+addToggle(playersPage, "Партиклы (искры + аура энергии)", function() return STATE.ParticlesEnabled end, function(v)
+	STATE.ParticlesEnabled = v
+	for _, data in pairs(playerOverlays) do
+		data.sparkEmitter.Enabled = STATE.PlayerMasterEsp and v and data.isVisible
+		data.auraEmitter.Enabled = STATE.PlayerMasterEsp and v and data.isVisible
+	end
+end)
+
+-- Вкладка 3: BOT ESP
+local botsPage = pages[3]
+addToggle(botsPage, "⚡ Включить весь ESP ботов (NPC)", function() return STATE.BotMasterEsp end, function(v)
+	STATE.BotMasterEsp = v
+	if not v then
+		for _, data in pairs(botOverlays) do
+			data.billboard.Enabled = false
+			data.highlight.Enabled = false
+			data.sparkEmitter.Enabled = false
+			data.auraEmitter.Enabled = false
+		end
+	end
+end)
+addToggle(botsPage, "Плашки здоровья над ботами", function() return STATE.BotEspEnabled end, function(v)
+	STATE.BotEspEnabled = v
+	for _, data in pairs(botOverlays) do
+		data.billboard.Enabled = STATE.BotMasterEsp and v and data.isVisible
+	end
+end)
+addActionButton(botsPage, getDetailButtonLabel, cycleDetailMode)
+addSlider(botsPage, "Размер плашек ESP (масштаб)", 0.55, 1.30, 2, function() return STATE.EspScale end, function(v)
+	STATE.EspScale = v
+	refreshAllOverlayLayouts()
+	for _, cb in ipairs(uiRefreshCallbacks) do cb() end
+end)
+addToggle(botsPage, "Неоновая обводка ботов (Chams)", function() return STATE.BotHighlight end, function(v)
+	STATE.BotHighlight = v
+	for _, data in pairs(botOverlays) do
+		data.highlight.Enabled = STATE.BotMasterEsp and v and data.isVisible
+	end
+end)
+addToggle(botsPage, "Частицы над ботами и аура", function() return STATE.BotParticles end, function(v)
+	STATE.BotParticles = v
+	for _, data in pairs(botOverlays) do
+		data.sparkEmitter.Enabled = STATE.BotMasterEsp and v and data.isVisible
+		data.auraEmitter.Enabled = STATE.BotMasterEsp and v and data.isVisible
+	end
+end)
+addSlider(botsPage, "Дистанция видимости ботов (studs)", 100, 800, 0, function() return STATE.BotMaxDistance end, function(v)
+	STATE.BotMaxDistance = v
+	for _, data in pairs(botOverlays) do
+		data.billboard.MaxDistance = v
+	end
+end)
+addActionButton(botsPage, function() return "🔄 Пересканировать ботов на карте" end, function()
+	scanWorkspaceBots()
+end)
+
+-- Вкладка 4: PHYSICS LAB
+local physPage = pages[4]
+addToggle(physPage, "Noclip (проход сквозь стены)", function() return STATE.NoclipEnabled end, function(v)
+	if v then STATE.NoclipEnabled = true else disableNoclip() end
+end)
+addToggle(physPage, "Free-Fly (полёт по камере)", function() return STATE.FlyEnabled end, function(v)
+	STATE.FlyEnabled = v
+	local hum = localPlayer.Character and localPlayer.Character:FindFirstChildOfClass("Humanoid")
+	if hum then hum.PlatformStand = v end
+end)
+addToggle(physPage, "Air-Jump (прыжки в воздухе)", function() return STATE.InfiniteJump end, function(v)
+	STATE.InfiniteJump = v
+end)
+addSlider(physPage, "Скорость бега (WalkSpeed)", 16, 130, 0, function() return STATE.CustomWalkSpeed end, function(v)
+	STATE.CustomWalkSpeed = v
+	local hum = localPlayer.Character and localPlayer.Character:FindFirstChildOfClass("Humanoid")
+	if hum then hum.WalkSpeed = v end
+end)
+addSlider(physPage, "Сила прыжка (JumpPower)", 50, 220, 0, function() return STATE.CustomJumpPower end, function(v)
+	STATE.CustomJumpPower = v
+	local hum = localPlayer.Character and localPlayer.Character:FindFirstChildOfClass("Humanoid")
+	if hum then
+		hum.UseJumpPower = true
+		hum.JumpPower = v
+	end
+end)
+addActionButton(physPage, function() return "⚡ Телепорт к ближайшей цели" end, function()
+	local target = currentTarget or findClosestTarget()
+	local myRoot = localPlayer.Character and getCharacterRoot(localPlayer.Character)
+	local tRoot = target and getCharacterRoot(target)
+	if myRoot and tRoot then
+		myRoot.CFrame = tRoot.CFrame * CFrame.new(0, 0, 4)
+	end
+end)
+
+-- ============================================================================
+-- 10. АНИМАЦИЯ ОТКРЫТИЯ И ПЕРЕТАСКИВАНИЕ (БЛОКИРУЕТСЯ ПРИ SCRIPT LOCK)
+-- ============================================================================
+local function setMenuVisible(visible: boolean)
+	STATE.MenuOpen = visible
+	if visible then
+		mainFrame.Visible = true
+		uiScale.Scale = 0.85
+		quickTween(uiScale, 0.26, { Scale = 1 }, Enum.EasingStyle.Back)
+	else
+		local tw = quickTween(uiScale, 0.16, { Scale = 0.85 }, Enum.EasingStyle.Quad)
+		tw.Completed:Once(function()
+			if not STATE.MenuOpen and not STATE.Deactivated then
+				mainFrame.Visible = false
+			end
+		end)
+	end
+end
+
+local function makeDraggable(dragHandle: GuiObject, moveTarget: GuiObject, onTap: (() -> ())?)
+	local dragging = false
+	local moved = false
+	local dragStart = Vector3.zero
+	local startPos = UDim2.new()
+
+	dragHandle.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+			moved = false
+			dragStart = input.Position
+			startPos = moveTarget.Position
+		end
+	end)
+
+	table.insert(globalConnections, UserInputService.InputChanged:Connect(function(input)
+		if dragging and not STATE.ScriptLocked and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+			local delta = input.Position - dragStart
+			if delta.Magnitude > 6 then
+				moved = true
+			end
+			moveTarget.Position = UDim2.new(
+				startPos.X.Scale, startPos.X.Offset + delta.X,
+				startPos.Y.Scale, startPos.Y.Offset + delta.Y
+			)
+		end
+	end))
+
+	table.insert(globalConnections, UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			if dragging and not moved and onTap then
+				onTap()
+			end
+			dragging = false
+		end
+	end))
+end
+
+makeDraggable(header, mainFrame, nil)
+makeDraggable(openPill, openPill, function()
+	setMenuVisible(not STATE.MenuOpen)
+end)
+makeDraggable(lockPill, lockPill, function()
+	if STATE.ScriptLocked then return end
+	setLockActive(not isLocking)
+end)
+
+closeBtn.MouseButton1Click:Connect(function()
+	setMenuVisible(false)
+end)
+
+-- ============================================================================
+-- 11. ЦИКЛ LOCK-ON КАМЕРЫ + ФИЗИКА + РЕНДЕР
+-- ============================================================================
+local function onCameraStep(dt: number)
+	if STATE.Deactivated then return end
+	local activeCam = camera
+	if not activeCam then return end
+
+	-- Если скрипт залочен — аимбот стоит на месте и не двигает камеру
+	if STATE.ScriptLocked then
+		fovStroke.Color = COLORS.Amber
+		clearLockBeam()
+		smoothedLookDir = nil
+		return
+	end
+
+	if not STATE.LockEnabled or not isLocking then
+		fovStroke.Color = getAccentColor()
+		lockStatusLabel.Text = ""
+		clearLockBeam()
+		smoothedLookDir = nil
+		return
+	end
+
+	local valid, targetPart = isValidTarget(currentTarget)
+	if not valid or not targetPart then
+		currentTarget = findClosestTarget()
+		valid, targetPart = isValidTarget(currentTarget)
+		if not valid or not targetPart then
+			fovStroke.Color = getAccentColor()
+			lockStatusLabel.Text = "SEARCHING..."
+			lockStatusLabel.TextColor3 = getAccentColor()
+			clearLockBeam()
+			smoothedLookDir = nil
+			return
+		end
+	end
+
+	local predictedPos = getPredictedAimPosition(targetPart)
+	local zoneTag = if STATE.LockTargetPart == "Head" then "HEAD" else "BODY"
+
+	fovStroke.Color = COLORS.Red
+	lockStatusLabel.Text = string.format("LOCKED: %s [%s]", currentTarget and currentTarget.Name or "TARGET", zoneTag)
+	lockStatusLabel.TextColor3 = COLORS.Red
+	updateLockBeam(targetPart, predictedPos)
+
+	if activeCam.CameraType ~= Enum.CameraType.Custom then
+		activeCam.CameraType = Enum.CameraType.Custom
+	end
+
+	local curDir: Vector3 = smoothedLookDir or activeCam.CFrame.LookVector
+	local alpha = 1 - math.exp(-STATE.LockSmoothness * 45 * dt)
+	local focusPos = activeCam.Focus.Position
+	local zoomDist = (activeCam.CFrame.Position - focusPos).Magnitude
+
+	if zoomDist > 1.5 then
+		local toTarget = predictedPos - focusPos
+		if toTarget.Magnitude > 0.01 then
+			local lerped = curDir:Lerp(toTarget.Unit, alpha)
+			if lerped.Magnitude > 0.001 then
+				curDir = lerped.Unit
+			end
+			local newCamPos = focusPos - curDir * zoomDist
+			activeCam.CFrame = CFrame.lookAt(newCamPos, newCamPos + curDir)
+		end
+	else
+		local camPos = activeCam.CFrame.Position
+		local toTarget = predictedPos - camPos
+		if toTarget.Magnitude > 0.01 then
+			local lerped = curDir:Lerp(toTarget.Unit, alpha)
+			if lerped.Magnitude > 0.001 then
+				curDir = lerped.Unit
+			end
+			activeCam.CFrame = CFrame.lookAt(camPos, camPos + curDir)
+		end
+	end
+
+	smoothedLookDir = curDir
+end
+
+local function onPhysicsStep()
+	if STATE.Deactivated or not STATE.NoclipEnabled then return end
+	local char = localPlayer.Character
+	if not char then return end
+
+	for _, part in ipairs(char:GetDescendants()) do
+		if part:IsA("BasePart") and part.CanCollide then
+			noclipCachedParts[part] = true
+			part.CanCollide = false
+		end
+	end
+end
+
+local elapsedTime = 0
+local function updateOverlayList(list: { [any]: EntityOverlay }, camPos: Vector3, pulseWave: number?)
+	for _, data in pairs(list) do
+		local root = data.rootPart
+		if root and root.Parent then
+			local maxDist = if data.isBot then STATE.BotMaxDistance else STATE.MaxDistance
+			local dist = (root.Position - camPos).Magnitude
+			local inRange = dist <= maxDist
+
+			local wantOverlay: boolean
+			local wantChams: boolean
+			local wantParticles: boolean
+
+			if data.isBot then
+				wantOverlay = inRange and STATE.BotMasterEsp and STATE.BotEspEnabled
+				wantChams = inRange and STATE.BotMasterEsp and STATE.BotHighlight
+				wantParticles = inRange and STATE.BotMasterEsp and STATE.BotParticles
+			else
+				wantOverlay = inRange and STATE.PlayerMasterEsp and STATE.PlayerOverlayEnabled
+				wantChams = inRange and STATE.PlayerMasterEsp and STATE.PlayerHighlight
+				wantParticles = inRange and STATE.PlayerMasterEsp and STATE.ParticlesEnabled
+			end
+
+			data.isVisible = inRange
+			data.billboard.Enabled = wantOverlay
+			data.highlight.Enabled = wantChams
+			data.sparkEmitter.Enabled = wantParticles
+			data.auraEmitter.Enabled = wantParticles
+
+			if not data.isBot then
+				ensurePlayerTracer(data)
+			end
+
+			if wantOverlay then
+				if STATE.EspDetailMode == "FULL" then
+					data.distLabel.Text = string.format("%dm • %d HP", math.floor(dist * 0.28), math.ceil(data.humanoid.Health))
+				end
+				if data.isLowHp and data.fadeReady and pulseWave then
+					data.glowStroke.Transparency = 0.08 + (pulseWave * 0.55)
+				end
+			end
+		end
+	end
+end
+
+local function onRenderStepped(dt: number)
+	if STATE.Deactivated then return end
+	elapsedTime += dt
+
+	if not STATE.ScriptLocked then
+		local dashRot = (elapsedTime * 55) % 360
+		pillGrad.Rotation = dashRot
+		if mainFrame.Visible then
+			mainBorderGrad.Rotation = dashRot
+		end
+	end
+
+	local activeCam = camera
+	if not activeCam then return end
+	local camPos = activeCam.CFrame.Position
+
+	if STATE.FlyEnabled then
+		local char = localPlayer.Character
+		local root = char and getCharacterRoot(char)
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		if root and hum then
+			hum.PlatformStand = true
+			local moveDir = hum.MoveDirection
+			local flyVel = Vector3.zero
+			if moveDir.Magnitude > 0.05 then
+				local camLook = activeCam.CFrame.LookVector
+				local camRight = activeCam.CFrame.RightVector
+				local horiz = Vector3.new(camLook.X, 0, camLook.Z)
+				local flatLook = if horiz.Magnitude > 0.01 then horiz.Unit else Vector3.new(0, 0, -1)
+				flyVel = (camLook * moveDir:Dot(flatLook) + camRight * moveDir:Dot(camRight)) * STATE.FlySpeed
+			end
+			root.AssemblyLinearVelocity = flyVel
+		end
+	end
+
+	local pulseWave = (math.sin(elapsedTime * 7.5) + 1) * 0.5
+	updateOverlayList(playerOverlays, camPos, pulseWave)
+	updateOverlayList(botOverlays, camPos, pulseWave)
+end
+
+-- ============================================================================
+-- 12. ВВОД, ЖИЗНЕННЫЙ ЦИКЛ И ОЧИСТКА
+-- ============================================================================
+table.insert(globalConnections, UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
+	if STATE.Deactivated then return end
+
+	if not gameProcessed and (input.KeyCode == STATE.MenuKey or input.KeyCode == STATE.AltMenuKey) then
+		setMenuVisible(not STATE.MenuOpen)
+		return
+	end
+
+	if not STATE.LockEnabled or STATE.ScriptLocked then return end
+
+	if input.UserInputType == STATE.LockKey or (not gameProcessed and input.KeyCode == STATE.LockAltKey) then
+		if STATE.LockToggleMode then
+			setLockActive(not isLocking)
+		else
+			setLockActive(true)
+		end
+		return
+	end
+
+	if STATE.LockOnFire and not gameProcessed then
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			setLockActive(true)
+		end
+	end
+end))
+
+table.insert(globalConnections, UserInputService.InputEnded:Connect(function(input: InputObject)
+	if STATE.Deactivated or STATE.ScriptLocked then return end
+
+	if not STATE.LockToggleMode then
+		if input.UserInputType == STATE.LockKey or input.KeyCode == STATE.LockAltKey then
+			setLockActive(false)
+		end
+	end
+
+	if STATE.LockOnFire then
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			setLockActive(false)
+		end
+	end
+end))
+
+table.insert(globalConnections, UserInputService.JumpRequest:Connect(function()
+	if STATE.Deactivated or not STATE.InfiniteJump then return end
+	local char = localPlayer.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if hum and hum:GetState() == Enum.HumanoidStateType.Freefall then
+		hum:ChangeState(Enum.HumanoidStateType.Jumping)
+	end
+end))
+
+table.insert(globalConnections, localPlayer.CharacterAdded:Connect(function(char)
+	if STATE.Deactivated then return end
+	table.clear(noclipCachedParts)
+	local hum = char:WaitForChild("Humanoid", 5) :: Humanoid?
+	if hum and not STATE.Deactivated then
+		hum.WalkSpeed = STATE.CustomWalkSpeed
+		hum.UseJumpPower = true
+		hum.JumpPower = STATE.CustomJumpPower
+	end
+end))
+
+local function setupPlayer(player: Player)
+	if STATE.Deactivated or player == localPlayer then return end
+	if player.Character then
+		task.spawn(createEntityOverlay, player.Character, player.DisplayName, false, player)
+	end
+	playerConnections[player] = player.CharacterAdded:Connect(function(character)
+		createEntityOverlay(character, player.DisplayName, false, player)
+	end)
+end
+
+local function cleanupPlayer(player: Player)
+	local conn = playerConnections[player]
+	if conn and conn.Connected then conn:Disconnect() end
+	playerConnections[player] = nil
+	removeEntityOverlay(playerOverlays[player])
+end
+
+for _, player in ipairs(Players:GetPlayers()) do
+	setupPlayer(player)
+end
+scanWorkspaceBots()
+
+table.insert(globalConnections, Players.PlayerAdded:Connect(setupPlayer))
+table.insert(globalConnections, Players.PlayerRemoving:Connect(cleanupPlayer))
+
+table.insert(globalConnections, Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+	camera = Workspace.CurrentCamera
+end))
+
+RunService:BindToRenderStep("NeonLockOnV35", Enum.RenderPriority.Camera.Value + 1, onCameraStep)
+table.insert(globalConnections, RunService.Stepped:Connect(onPhysicsStep))
+table.insert(globalConnections, RunService.RenderStepped:Connect(onRenderStepped))
