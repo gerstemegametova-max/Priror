@@ -1,449 +1,2186 @@
--- ═══════════════════════════════════════════════════════════════════════
--- BLACKHAWK RESCUE MISSION 5 // ULTIMATE v2 (Fixed Camera + Wallcheck)
--- ═══════════════════════════════════════════════════════════════════════
-print("[BRM5] Загрузка...")
+-- // BRM5 Training Script (Enhanced UI & Tactical ESP Edition)
+-- // Модульный клиентский скрипт для локальной симуляции и визуализации в Roblox Studio
+
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
-local StarterGui = game:GetService("StarterGui")
-local CoreGui = game:GetService("CoreGui")
 local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
+local CoreGui = game:GetService("CoreGui")
+
 local LocalPlayer = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 
-local Env = (type(getgenv) == "function" and getgenv()) or _G
-if Env.BRM5_Cleanup then pcall(Env.BRM5_Cleanup) end
-
--- Настройки
+-- // 1. ТАБЛИЦА СОСТОЯНИЯ (STATE)
 local State = {
-    Active = true, Minimized = false, Connections = {},
-    AimbotEnabled = false, AimPart = "Head", FOV = 250, Smoothness = 0.35,
-    HitboxEnabled = false, HitboxSize = 15,
-    ESPEnabled = false, ESPHealth = true, ESPDistance = 2000,
-    ESPOutline = true, ESPRadius = true,
-    NoRecoil = false
-}
-Env.BRM5_State = State
+    ActiveMode = "Main", -- "Main" | "Legit" | "Rage"
+    Minimized = false,
+    UiLocked = false,
+    Unloaded = false,
 
-local Theme = {
-    Background = Color3.fromRGB(12, 12, 14), Surface = Color3.fromRGB(18, 18, 22),
-    Element = Color3.fromRGB(26, 26, 32), ElementActive = Color3.fromRGB(52, 52, 64),
-    Stroke = Color3.fromRGB(45, 45, 54), TextPrimary = Color3.fromRGB(235, 235, 240),
-    TextSecondary = Color3.fromRGB(145, 145, 155), Danger = Color3.fromRGB(40, 22, 24),
-    DangerStroke = Color3.fromRGB(95, 40, 45)
+    Legit = {
+        -- Target Assist
+        AimEnabled = false,
+        Smoothness = 0.25,
+        TargetPart = "Head", -- "Head" | "Torso" | "HumanoidRootPart"
+        MaxDistance = 250,
+        FovRadius = 150,
+        ShowFov = true,
+        RequireRMB = true,
+        VisibleOnly = true,
+
+        -- Hitbox Modifier
+        HitboxEnabled = false,
+        HitboxScale = 1.5,
+
+        -- Visual Overlay (Tactical ESP)
+        EspEnabled = false,
+        BoxStyle = "Corners", -- "Corners" | "Full" | "Off"
+        ShowHpBar = true,
+        ShowName = true,
+        ShowDistance = true,
+        ShowHeadDot = true,
+        ShowTracers = false,
+        ShowOffscreen = true,
+        ShowSkeleton = false,
+        EspMaxDist = 1000,
+        EspVisibleOnly = true,
+
+        -- Weapon Modifier
+        NoRecoil = false,
+        RecoilStrength = 0.5,
+        NoShake = false,
+    },
+
+    Rage = {
+        -- Target Assist
+        AimEnabled = false,
+        MaxDistance = 2000,
+        AutoTarget = true,
+        IgnoreWalls = true,
+
+        -- Hitbox Modifier
+        HitboxEnabled = true,
+        HitboxScale = 6.0,
+
+        -- Visual Overlay (Full Tactical ESP)
+        EspEnabled = false,
+        BoxStyle = "Corners", -- "Corners" | "Full" | "Off"
+        ShowHpBar = true,
+        ShowInfoText = true,
+        ShowHeadDot = true,
+        ShowTracers = true,
+        ShowOffscreen = true,
+        ShowHighlight = true,
+        ShowParticles = true,
+        ShowSkeleton = true,
+        EspMaxDist = 3500,
+
+        -- Weapon Modifier
+        NoRecoil = true,
+        NoShake = true,
+        AutoFire = false,
+    }
 }
 
--- Утилиты
+-- // Кэш и реестр подключений
+local Connections = {}
+local RenderBindings = {}
+local OriginalHitboxes = {}
+local EspCache = {}
+local ParticleCache = {}
+local HighlightCache = {}
+local PinnedHudButtons = {}
+local ToggleSyncCallbacks = {}
+local UpdateCardBadgesCallback = nil
+
+-- // 2. УТИЛИТЫ И СТИЛИЗАЦИЯ
 local Utils = {}
-function Utils.Track(c) if c then table.insert(State.Connections, c) end return c end
-function Utils.Notify(t, x) pcall(function() StarterGui:SetCore("SendNotification", { Title = t, Text = x, Duration = 3 }) end) end
-function Utils.Log(msg) print("[BRM5] " .. tostring(msg)) end
-function Utils.GuiParent()
-    local ok, p = pcall(function() if type(gethui) == "function" then return gethui() end return CoreGui end)
-    if ok and p then return p end
-    return LocalPlayer and LocalPlayer:WaitForChild("PlayerGui", 5) or CoreGui
+
+Utils.Colors = {
+    Bg = Color3.fromRGB(10, 10, 13),
+    Panel = Color3.fromRGB(16, 17, 22),
+    PanelLight = Color3.fromRGB(22, 24, 31),
+    Element = Color3.fromRGB(24, 26, 34),
+    ElementHover = Color3.fromRGB(32, 35, 46),
+    Border = Color3.fromRGB(44, 48, 62),
+    Text = Color3.fromRGB(242, 244, 250),
+    SubText = Color3.fromRGB(145, 152, 172),
+    LegitAccent = Color3.fromRGB(55, 145, 255),
+    LegitDark = Color3.fromRGB(20, 48, 95),
+    RageAccent = Color3.fromRGB(255, 52, 72),
+    RageDark = Color3.fromRGB(95, 20, 32),
+    LockAccent = Color3.fromRGB(255, 185, 45),
+    Green = Color3.fromRGB(55, 230, 120),
+    Yellow = Color3.fromRGB(255, 210, 60),
+    White = Color3.fromRGB(255, 255, 255),
+    Black = Color3.fromRGB(0, 0, 0),
+}
+
+function Utils.Create(className, props, parent)
+    local inst = Instance.new(className)
+    for k, v in pairs(props or {}) do
+        inst[k] = v
+    end
+    if parent then
+        inst.Parent = parent
+    end
+    return inst
 end
-function Utils.Style(i, r, sc, sw)
-    local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, r or 8); c.Parent = i
-    if sc then local s = Instance.new("UIStroke"); s.Color = sc; s.Thickness = sw or 1; s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border; s.Parent = i end
+
+function Utils.AddCorner(parent, radius)
+    return Utils.Create("UICorner", { CornerRadius = UDim.new(0, radius or 6) }, parent)
 end
-function Utils.Drag(tr, tf, cb)
-    local d, di, ds, sp, md = false, nil, nil, nil, 0
-    Utils.Track(tr.InputBegan:Connect(function(inp)
-        if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then
-            d = true; ds = inp.Position; sp = tf.Position; md = 0
-            local rc; rc = inp.Changed:Connect(function()
-                if inp.UserInputState == Enum.UserInputState.End then d = false; if rc then rc:Disconnect() end; if md < 12 and cb then cb() end end
+
+function Utils.AddStroke(parent, color, thickness, transparency)
+    return Utils.Create("UIStroke", {
+        Color = color or Utils.Colors.Border,
+        Thickness = thickness or 1,
+        Transparency = transparency or 0,
+        ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    }, parent)
+end
+
+function Utils.AddGradient(parent, c1, c2, rotation)
+    return Utils.Create("UIGradient", {
+        Color = ColorSequence.new(c1, c2),
+        Rotation = rotation or 90
+    }, parent)
+end
+
+-- // Универсальное перетаскивание с учётом заморозки (State.UiLocked) и тачскрина
+function Utils.MakeDraggable(dragHandle, targetFrame)
+    local dragging = false
+    local dragInput, dragStart, startPos
+
+    local function update(input)
+        if State.UiLocked then
+            dragging = false
+            return
+        end
+        local delta = input.Position - dragStart
+        targetFrame.Position = UDim2.new(
+            startPos.X.Scale,
+            startPos.X.Offset + delta.X,
+            startPos.Y.Scale,
+            startPos.Y.Offset + delta.Y
+        )
+    end
+
+    local c1 = dragHandle.InputBegan:Connect(function(input)
+        if State.UiLocked then return end
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = targetFrame.Position
+
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
             end)
         end
-    end))
-    Utils.Track(tr.InputChanged:Connect(function(inp) if inp.UserInputType == Enum.UserInputType.MouseMovement or inp.UserInputType == Enum.UserInputType.Touch then di = inp end end))
-    Utils.Track(UserInputService.InputChanged:Connect(function(inp)
-        if inp == di and d and ds and sp then local dl = inp.Position - ds; md = dl.Magnitude; tf.Position = UDim2.new(sp.X.Scale, sp.X.Offset + dl.X, sp.Y.Scale, sp.Y.Offset + dl.Y) end
-    end))
+    end)
+
+    local c2 = dragHandle.InputChanged:Connect(function(input)
+        if State.UiLocked then return end
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end)
+
+    local c3 = UserInputService.InputChanged:Connect(function(input)
+        if input == dragInput and dragging then
+            update(input)
+        end
+    end)
+
+    table.insert(Connections, c1)
+    table.insert(Connections, c2)
+    table.insert(Connections, c3)
 end
 
--- Умный поиск головы (с фоллбэками)
-local function GetTargetPart(char, partName)
-    if not char then return nil end
-    
-    -- Ищем точное совпадение по имени
-    local part = char:FindFirstChild(partName, true)
-    if part and part:IsA("BasePart") then return part end
-    
-    -- Если ищем Head, но его нет — берем HumanoidRootPart
-    if partName == "Head" then
-        part = char:FindFirstChild("HumanoidRootPart")
-        if part then return part end
+-- // Безопасный поиск частей персонажа (BRM5, R6 и R15)
+function Utils.GetBodyPart(character, partName)
+    if not character or not character.Parent then return nil end
+    local part = character:FindFirstChild(partName)
+    if part and part:IsA("BasePart") then
+        return part
     end
-    
-    -- Если ищем Body, но нет — берем HumanoidRootPart
-    if partName == "Body" then
-        part = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso") or char:FindFirstChild("UpperTorso")
-        if part then return part end
+    if partName == "Torso" then
+        local upper = character:FindFirstChild("UpperTorso")
+        if upper and upper:IsA("BasePart") then return upper end
     end
-    
-    -- Крайний фоллбэк - PrimaryPart
-    if char.PrimaryPart then return char.PrimaryPart end
-    
-    -- Совсем крайний - любая BasePart
-    return char:FindFirstChildWhichIsA("BasePart")
+    local hrp = character:FindFirstChild("HumanoidRootPart")
+    if hrp and hrp:IsA("BasePart") then
+        return hrp
+    end
+    return nil
 end
 
--- Проверка видимости (только для аимбота)
-local function HasLineOfSight(targetChar, targetPart)
-    if not targetPart then return false end
+-- // Проверка видимости через Workspace:Raycast
+function Utils.IsVisible(targetPart, targetCharacter)
+    if not targetPart or not Camera then return false end
     local origin = Camera.CFrame.Position
     local direction = targetPart.Position - origin
-    
-    local params = RaycastParams.new()
-    -- Исключаем ВСЕХ игроков (чтобы они не блокировали луч)
-    local exclude = { Camera }
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p.Character then table.insert(exclude, p.Character) end
+
+    local rayParams = RaycastParams.new()
+    rayParams.FilterType = Enum.RaycastFilterType.Exclude
+    local ignoreList = { Camera }
+    if LocalPlayer.Character then
+        table.insert(ignoreList, LocalPlayer.Character)
     end
-    -- Исключаем самого игрока
-    if LocalPlayer.Character then table.insert(exclude, LocalPlayer.Character) end
-    
-    params.FilterDescendantsInstances = exclude
-    params.FilterType = Enum.RaycastFilterType.Exclude
-    
-    local result = Workspace:Raycast(origin, direction, params)
-    -- Если ничего не встретили — прямая видимость
+    if targetCharacter then
+        table.insert(ignoreList, targetCharacter)
+    end
+    rayParams.FilterDescendantsInstances = ignoreList
+
+    local ok, result = pcall(function()
+        return Workspace:Raycast(origin, direction, rayParams)
+    end)
+
+    if not ok then return false end
     return result == nil
 end
 
--- Aimbot логика (находим цель)
-local function FindBestTarget()
-    if not State.AimbotEnabled or not LocalPlayer.Character then return nil end
-    
-    local closestTarget = nil
-    local shortestDist = State.FOV
-    local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
-    
+function Utils.IsAlive(character)
+    if not character or not character.Parent then return false end
+    local hum = character:FindFirstChild("Humanoid")
+    return hum and hum:IsA("Humanoid") and hum.Health > 0
+end
+
+-- // Плавный градиент цвета здоровья (Зелёный -> Жёлтый -> Красный)
+function Utils.GetHealthColor(ratio)
+    ratio = math.clamp(ratio, 0, 1)
+    if ratio > 0.5 then
+        local t = (ratio - 0.5) * 2
+        return Utils.Colors.Yellow:Lerp(Utils.Colors.Green, t)
+    else
+        local t = ratio * 2
+        return Utils.Colors.RageAccent:Lerp(Utils.Colors.Yellow, t)
+    end
+end
+
+-- // Система уведомлений
+local NotifyHolder
+function Utils.Notify(title, text, accentColor)
+    if not NotifyHolder or not NotifyHolder.Parent then return end
+    local accent = accentColor or Utils.Colors.LegitAccent
+
+    local toast = Utils.Create("Frame", {
+        Size = UDim2.new(1, 0, 0, 48),
+        BackgroundColor3 = Utils.Colors.Panel,
+        BackgroundTransparency = 1,
+        ClipsDescendants = true
+    }, NotifyHolder)
+    Utils.AddCorner(toast, 8)
+    local stroke = Utils.AddStroke(toast, accent, 1.2, 1)
+
+    local bar = Utils.Create("Frame", {
+        Size = UDim2.new(0, 3, 1, -10),
+        Position = UDim2.new(0, 5, 0, 5),
+        BackgroundColor3 = accent,
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0
+    }, toast)
+    Utils.AddCorner(bar, 2)
+
+    local tTitle = Utils.Create("TextLabel", {
+        Size = UDim2.new(1, -18, 0, 18),
+        Position = UDim2.new(0, 14, 0, 5),
+        BackgroundTransparency = 1,
+        Text = title,
+        TextColor3 = Utils.Colors.Text,
+        TextTransparency = 1,
+        Font = Enum.Font.GothamBold,
+        TextSize = 12,
+        TextXAlignment = Enum.TextXAlignment.Left
+    }, toast)
+
+    local tDesc = Utils.Create("TextLabel", {
+        Size = UDim2.new(1, -18, 0, 18),
+        Position = UDim2.new(0, 14, 0, 23),
+        BackgroundTransparency = 1,
+        Text = text,
+        TextColor3 = Utils.Colors.SubText,
+        TextTransparency = 1,
+        Font = Enum.Font.Gotham,
+        TextSize = 11,
+        TextXAlignment = Enum.TextXAlignment.Left
+    }, toast)
+
+    TweenService:Create(toast, TweenInfo.new(0.22), { BackgroundTransparency = 0.04 }):Play()
+    TweenService:Create(stroke, TweenInfo.new(0.22), { Transparency = 0.2 }):Play()
+    TweenService:Create(bar, TweenInfo.new(0.22), { BackgroundTransparency = 0 }):Play()
+    TweenService:Create(tTitle, TweenInfo.new(0.22), { TextTransparency = 0 }):Play()
+    TweenService:Create(tDesc, TweenInfo.new(0.22), { TextTransparency = 0 }):Play()
+
+    task.delay(2.2, function()
+        if toast and toast.Parent then
+            TweenService:Create(toast, TweenInfo.new(0.25), { BackgroundTransparency = 1 }):Play()
+            TweenService:Create(stroke, TweenInfo.new(0.25), { Transparency = 1 }):Play()
+            TweenService:Create(bar, TweenInfo.new(0.25), { BackgroundTransparency = 1 }):Play()
+            TweenService:Create(tTitle, TweenInfo.new(0.25), { TextTransparency = 1 }):Play()
+            local lastTw = TweenService:Create(tDesc, TweenInfo.new(0.25), { TextTransparency = 1 })
+            lastTw:Play()
+            lastTw.Completed:Wait()
+            if toast then toast:Destroy() end
+        end
+    end)
+end
+
+-- // 3. МОДУЛЬ TARGET ASSIST (НАВЕДЕНИЕ КАМЕРЫ)
+local TargetAssist = {}
+local FovCircleFrame = nil
+
+function TargetAssist.GetBestTarget()
+    if not Camera then return nil end
+    local isRage = State.Rage.AimEnabled
+    local isLegit = State.Legit.AimEnabled and not isRage
+
+    if not isRage and not isLegit then return nil end
+
+    local maxDist = isRage and State.Rage.MaxDistance or State.Legit.MaxDistance
+    local fovLimit = isRage and math.huge or State.Legit.FovRadius
+    local partName = isRage and "Head" or State.Legit.TargetPart
+    local checkWalls = isRage and (not State.Rage.IgnoreWalls) or State.Legit.VisibleOnly
+
+    local screenCenter = Vector2.new(Camera.ViewportSize.X * 0.5, Camera.ViewportSize.Y * 0.5)
+    local bestPart = nil
+    local shortestScore = fovLimit
+
     for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and player.Character and player.Character.Parent then
-            local targetPart = GetTargetPart(player.Character, State.AimPart)
-            if targetPart and HasLineOfSight(player.Character, targetPart) then
-                local screenPos, onScreen = Camera:WorldToScreenPoint(targetPart.Position)
-                if onScreen then
-                    local distToCenter = (Vector2.new(screenPos.X, screenPos.Y) - screenCenter).Magnitude
-                    if distToCenter < shortestDist then
-                        shortestDist = distToCenter
-                        closestTarget = targetPart
+        if player ~= LocalPlayer then
+            local char = player.Character
+            if Utils.IsAlive(char) then
+                local targetPart = Utils.GetBodyPart(char, partName)
+                if targetPart then
+                    local dist3D = (targetPart.Position - Camera.CFrame.Position).Magnitude
+                    if dist3D <= maxDist then
+                        local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
+                        if onScreen or isRage then
+                            local screenVec = Vector2.new(screenPos.X, screenPos.Y)
+                            local dist2D = onScreen and (screenVec - screenCenter).Magnitude or (dist3D + 1000)
+
+                            if dist2D <= shortestScore then
+                                if not checkWalls or Utils.IsVisible(targetPart, char) then
+                                    shortestScore = dist2D
+                                    bestPart = targetPart
+                                end
+                            end
+                        end
                     end
                 end
             end
         end
     end
-    return closestTarget
+
+    return bestPart
 end
 
--- Hitbox
-local CachedHitboxes = {}
-local function UpdateHitboxes()
-    if not State.Active then return end
+function TargetAssist.Step()
+    if State.Unloaded or not Camera then return end
+
+    if FovCircleFrame then
+        local show = State.Legit.AimEnabled and State.Legit.ShowFov and not State.Rage.AimEnabled
+        FovCircleFrame.Visible = show
+        if show then
+            local d = State.Legit.FovRadius * 2
+            FovCircleFrame.Size = UDim2.new(0, d, 0, d)
+            FovCircleFrame.Position = UDim2.new(0.5, -State.Legit.FovRadius, 0.5, -State.Legit.FovRadius)
+        end
+    end
+
+    local isRage = State.Rage.AimEnabled
+    local isLegit = State.Legit.AimEnabled and not isRage
+    if not isRage and not isLegit then return end
+
+    if isLegit and State.Legit.RequireRMB then
+        if not UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then
+            return
+        end
+    end
+
+    local targetPart = TargetAssist.GetBestTarget()
+    if targetPart then
+        local camPos = Camera.CFrame.Position
+        local goalCFrame = CFrame.lookAt(camPos, targetPart.Position)
+
+        if isRage then
+            Camera.CFrame = goalCFrame
+        else
+            local alpha = math.clamp(State.Legit.Smoothness, 0.05, 1.0)
+            Camera.CFrame = Camera.CFrame:Lerp(goalCFrame, alpha)
+        end
+    end
+end
+
+-- // 4. МОДУЛЬ HITBOX MODIFIER (ИЗМЕНЕНИЕ ХИТБОКСОВ)
+local HitboxModifier = {}
+local AllBodyPartNames = {
+    "Head", "Torso", "UpperTorso", "LowerTorso", "HumanoidRootPart",
+    "Left Arm", "Right Arm", "Left Leg", "Right Leg",
+    "LeftUpperArm", "LeftLowerArm", "LeftHand",
+    "RightUpperArm", "RightLowerArm", "RightHand",
+    "LeftUpperLeg", "LeftLowerLeg", "LeftFoot",
+    "RightUpperLeg", "RightLowerLeg", "RightFoot"
+}
+
+function HitboxModifier.RestoreCharacter(character)
+    local saved = OriginalHitboxes[character]
+    if not saved then return end
+
+    for part, data in pairs(saved) do
+        if part and part.Parent then
+            pcall(function()
+                part.Size = data.Size
+                part.Transparency = data.Transparency
+                part.CanCollide = data.CanCollide
+                local box = part:FindFirstChild("BRM5_HitboxOutline")
+                if box then box:Destroy() end
+            end)
+        end
+    end
+    OriginalHitboxes[character] = nil
+end
+
+function HitboxModifier.RestoreAll()
+    for char, _ in pairs(OriginalHitboxes) do
+        HitboxModifier.RestoreCharacter(char)
+    end
+    OriginalHitboxes = {}
+end
+
+function HitboxModifier.ApplyToCharacter(character)
+    if not character or not character.Parent then return end
+    if not Utils.IsAlive(character) then
+        HitboxModifier.RestoreCharacter(character)
+        return
+    end
+
+    local isRage = State.Rage.HitboxEnabled
+    local isLegit = State.Legit.HitboxEnabled and not isRage
+
+    if not isRage and not isLegit then
+        HitboxModifier.RestoreCharacter(character)
+        return
+    end
+
+    local targetParts = isRage and AllBodyPartNames or { "Head" }
+    local scale = isRage and State.Rage.HitboxScale or State.Legit.HitboxScale
+    local outlineColor = isRage and Utils.Colors.RageAccent or Utils.Colors.White
+
+    OriginalHitboxes[character] = OriginalHitboxes[character] or {}
+
+    for _, partName in ipairs(targetParts) do
+        local part = character:FindFirstChild(partName)
+        if part and part:IsA("BasePart") then
+            if not OriginalHitboxes[character][part] then
+                OriginalHitboxes[character][part] = {
+                    Size = part.Size,
+                    Transparency = part.Transparency,
+                    CanCollide = part.CanCollide
+                }
+            end
+
+            local orig = OriginalHitboxes[character][part]
+            pcall(function()
+                part.Size = orig.Size * scale
+                part.CanCollide = false
+                if partName == "HumanoidRootPart" then
+                    part.Transparency = 0.85
+                end
+
+                local outline = part:FindFirstChild("BRM5_HitboxOutline")
+                if not outline then
+                    outline = Instance.new("SelectionBox")
+                    outline.Name = "BRM5_HitboxOutline"
+                    outline.Adornee = part
+                    outline.SurfaceTransparency = 0.92
+                    outline.LineThickness = isRage and 0.04 or 0.02
+                    outline.Parent = part
+                end
+                outline.Color3 = outlineColor
+                outline.SurfaceColor3 = outlineColor
+            end)
+        end
+    end
+end
+
+local lastHitboxTick = 0
+function HitboxModifier.Update()
+    if State.Unloaded then return end
+    if tick() - lastHitboxTick < 0.15 then return end
+    lastHitboxTick = tick()
+
+    if not State.Rage.HitboxEnabled and not State.Legit.HitboxEnabled then
+        if next(OriginalHitboxes) ~= nil then
+            HitboxModifier.RestoreAll()
+        end
+        return
+    end
+
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= LocalPlayer and player.Character then
-            for _, part in ipairs(player.Character:GetChildren()) do
-                if part:IsA("BasePart") then
-                    if State.HitboxEnabled then
-                        if not CachedHitboxes[part] then
-                            CachedHitboxes[part] = { Size = part.Size, Trans = part.Transparency, Collide = part.CanCollide }
-                            part.Size = Vector3.new(State.HitboxSize, State.HitboxSize, State.HitboxSize)
-                            part.Transparency = 0.7
-                            part.CanCollide = false
-                            part.Massless = true
-                        end
-                    elseif CachedHitboxes[part] then
-                        local orig = CachedHitboxes[part]
-                        part.Size = orig.Size
-                        part.Transparency = orig.Trans
-                        part.CanCollide = orig.Collide
-                        CachedHitboxes[part] = nil
-                    end
-                end
-            end
+            HitboxModifier.ApplyToCharacter(player.Character)
         end
     end
 end
 
--- ESP
-local espFolder = Instance.new("Folder"); espFolder.Name = "BRM5_ESP"; pcall(function() espFolder.Parent = Utils.GuiParent() end)
-local espGuis = {}
-local highlights = {}
+-- // 5. МОДУЛЬ TACTICAL VISUAL OVERLAY (УЛУЧШЕННЫЙ ESP)
+local VisualOverlay = {}
+local EspFolder = nil
 
-local function UpdateESP()
-    if not State.Active then return end
-    local myPos = Camera.CFrame.Position
-    
-    if not State.ESPEnabled then
-        for _, d in pairs(espGuis) do if d.gui then d.gui.Enabled = false end end
-        for _, hl in pairs(highlights) do pcall(function() hl.Enabled = false end) end
+local SkeletonConnectionsR15 = {
+    { "Head", "UpperTorso" },
+    { "UpperTorso", "LowerTorso" },
+    { "UpperTorso", "LeftUpperArm" },
+    { "LeftUpperArm", "LeftLowerArm" },
+    { "UpperTorso", "RightUpperArm" },
+    { "RightUpperArm", "RightLowerArm" },
+    { "LowerTorso", "LeftUpperLeg" },
+    { "LeftUpperLeg", "LeftLowerLeg" },
+    { "LowerTorso", "RightUpperLeg" },
+    { "RightUpperLeg", "RightLowerLeg" }
+}
+
+local SkeletonConnectionsR6 = {
+    { "Head", "Torso" },
+    { "Torso", "Left Arm" },
+    { "Torso", "Right Arm" },
+    { "Torso", "Left Leg" },
+    { "Torso", "Right Leg" }
+}
+
+function VisualOverlay.RemovePlayerEsp(player)
+    local cache = EspCache[player]
+    if cache then
+        if cache.Container then cache.Container:Destroy() end
+        EspCache[player] = nil
+    end
+
+    if HighlightCache[player] then
+        HighlightCache[player]:Destroy()
+        HighlightCache[player] = nil
+    end
+
+    if ParticleCache[player] then
+        ParticleCache[player]:Destroy()
+        ParticleCache[player] = nil
+    end
+end
+
+-- // Создание предварительно выделенного пула 2D-элементов для игрока (0 лагов в RenderStepped)
+function VisualOverlay.CreatePlayerEsp(player)
+    if EspCache[player] or not EspFolder then return end
+
+    local container = Utils.Create("Folder", { Name = "ESP_" .. player.Name }, EspFolder)
+
+    -- Полный бокс с мягкой заливкой
+    local fullBox = Utils.Create("Frame", {
+        BackgroundColor3 = Utils.Colors.LegitAccent,
+        BackgroundTransparency = 0.93,
+        Visible = false
+    }, container)
+    local fullStroke = Utils.AddStroke(fullBox, Utils.Colors.LegitAccent, 1.5)
+
+    -- 8 сегментов для тактических угловых рамок (Corner Box) + тень
+    local cornerShadows = {}
+    local cornerLines = {}
+    for i = 1, 8 do
+        local sh = Utils.Create("Frame", {
+            BackgroundColor3 = Utils.Colors.Black,
+            BackgroundTransparency = 0.35,
+            BorderSizePixel = 0,
+            ZIndex = 2,
+            Visible = false
+        }, container)
+        local ln = Utils.Create("Frame", {
+            BackgroundColor3 = Utils.Colors.LegitAccent,
+            BorderSizePixel = 0,
+            ZIndex = 3,
+            Visible = false
+        }, container)
+        table.insert(cornerShadows, sh)
+        table.insert(cornerLines, ln)
+    end
+
+    -- Вертикальная полоска HP слева от бокса + призрачный след урона
+    local hpBg = Utils.Create("Frame", {
+        BackgroundColor3 = Color3.fromRGB(12, 12, 16),
+        BackgroundTransparency = 0.2,
+        BorderSizePixel = 0,
+        ZIndex = 3,
+        Visible = false
+    }, container)
+    Utils.AddStroke(hpBg, Utils.Colors.Black, 1, 0.3)
+
+    local hpGhost = Utils.Create("Frame", {
+        AnchorPoint = Vector2.new(0, 1),
+        Position = UDim2.new(0, 0, 1, 0),
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundColor3 = Utils.Colors.White,
+        BackgroundTransparency = 0.25,
+        BorderSizePixel = 0,
+        ZIndex = 4
+    }, hpBg)
+
+    local hpFill = Utils.Create("Frame", {
+        AnchorPoint = Vector2.new(0, 1),
+        Position = UDim2.new(0, 0, 1, 0),
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundColor3 = Utils.Colors.Green,
+        BorderSizePixel = 0,
+        ZIndex = 5
+    }, hpBg)
+
+    -- Имя игрока сверху бокса
+    local nameLabel = Utils.Create("TextLabel", {
+        Size = UDim2.new(0, 200, 0, 16),
+        AnchorPoint = Vector2.new(0.5, 1),
+        BackgroundTransparency = 1,
+        Text = player.Name,
+        TextColor3 = Utils.Colors.White,
+        TextStrokeColor3 = Utils.Colors.Black,
+        TextStrokeTransparency = 0.2,
+        Font = Enum.Font.GothamBold,
+        TextSize = 11,
+        ZIndex = 6,
+        Visible = false
+    }, container)
+
+    -- Нижняя плашка дистанции / статуса / HP
+    local infoBadge = Utils.Create("TextLabel", {
+        Size = UDim2.new(0, 180, 0, 15),
+        AnchorPoint = Vector2.new(0.5, 0),
+        BackgroundTransparency = 1,
+        Text = "0m",
+        TextColor3 = Utils.Colors.SubText,
+        TextStrokeColor3 = Utils.Colors.Black,
+        TextStrokeTransparency = 0.25,
+        Font = Enum.Font.GothamMedium,
+        TextSize = 10,
+        ZIndex = 6,
+        Visible = false
+    }, container)
+
+    -- Прицельный маркер на голове (Head Dot)
+    local headDot = Utils.Create("Frame", {
+        Size = UDim2.new(0, 6, 0, 6),
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        BackgroundColor3 = Utils.Colors.White,
+        BorderSizePixel = 0,
+        ZIndex = 6,
+        Visible = false
+    }, container)
+    Utils.AddCorner(headDot, 99)
+    local headDotStroke = Utils.AddStroke(headDot, Utils.Colors.LegitAccent, 1.5)
+
+    -- Трассер (Snapline)
+    local tracer = Utils.Create("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        BackgroundColor3 = Utils.Colors.LegitAccent,
+        BackgroundTransparency = 0.35,
+        BorderSizePixel = 0,
+        ZIndex = 2,
+        Visible = false
+    }, container)
+
+    -- Индикатор цели вне экрана (Offscreen Arrow)
+    local offscreenDot = Utils.Create("Frame", {
+        Size = UDim2.new(0, 14, 0, 14),
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        BackgroundColor3 = Utils.Colors.LegitAccent,
+        BackgroundTransparency = 0.15,
+        Rotation = 45,
+        BorderSizePixel = 0,
+        ZIndex = 7,
+        Visible = false
+    }, container)
+    Utils.AddCorner(offscreenDot, 3)
+    Utils.AddStroke(offscreenDot, Utils.Colors.White, 1.2)
+
+    -- Линии скелета (10 костей)
+    local skelLines = {}
+    for i = 1, 10 do
+        local ln = Utils.Create("Frame", {
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            BorderSizePixel = 0,
+            BackgroundColor3 = Utils.Colors.White,
+            ZIndex = 3,
+            Visible = false
+        }, container)
+        table.insert(skelLines, ln)
+    end
+
+    EspCache[player] = {
+        Container = container,
+        FullBox = fullBox,
+        FullStroke = fullStroke,
+        CornerShadows = cornerShadows,
+        CornerLines = cornerLines,
+        HpBg = hpBg,
+        HpGhost = hpGhost,
+        HpFill = hpFill,
+        GhostRatio = 1,
+        NameLabel = nameLabel,
+        InfoBadge = infoBadge,
+        HeadDot = headDot,
+        HeadDotStroke = headDotStroke,
+        Tracer = tracer,
+        OffscreenDot = offscreenDot,
+        SkelLines = skelLines
+    }
+end
+
+local function HideAllElements(cache)
+    if not cache then return end
+    cache.FullBox.Visible = false
+    for i = 1, 8 do
+        cache.CornerShadows[i].Visible = false
+        cache.CornerLines[i].Visible = false
+    end
+    cache.HpBg.Visible = false
+    cache.NameLabel.Visible = false
+    cache.InfoBadge.Visible = false
+    cache.HeadDot.Visible = false
+    cache.Tracer.Visible = false
+    cache.OffscreenDot.Visible = false
+    for _, ln in ipairs(cache.SkelLines) do
+        ln.Visible = false
+    end
+end
+
+local function DrawLine2D(lineFrame, p1, p2, color, thickness, transparency)
+    local dx = p2.X - p1.X
+    local dy = p2.Y - p1.Y
+    local len = math.sqrt(dx * dx + dy * dy)
+    if len < 1 then
+        lineFrame.Visible = false
         return
     end
-    
-    local activePlayers = {}
+    lineFrame.Position = UDim2.new(0, (p1.X + p2.X) * 0.5, 0, (p1.Y + p2.Y) * 0.5)
+    lineFrame.Size = UDim2.new(0, len, 0, thickness or 1.5)
+    lineFrame.Rotation = math.deg(math.atan2(dy, dx))
+    lineFrame.BackgroundColor3 = color
+    if transparency then
+        lineFrame.BackgroundTransparency = transparency
+    end
+    lineFrame.Visible = true
+end
+
+-- // Отрисовка 8 угловых тактических скобок
+local function DrawCornerBox(cache, x, y, w, h, color)
+    local cornerLen = math.clamp(math.min(w, h) * 0.26, 5, 22)
+    local thick = 2
+
+    local coords = {
+        -- Верхний левый
+        { x, y, cornerLen, thick },
+        { x, y, thick, cornerLen },
+        -- Верхний правый
+        { x + w - cornerLen, y, cornerLen, thick },
+        { x + w - thick, y, thick, cornerLen },
+        -- Нижний левый
+        { x, y + h - thick, cornerLen, thick },
+        { x, y + h - cornerLen, thick, cornerLen },
+        -- Нижний правый
+        { x + w - cornerLen, y + h - thick, cornerLen, thick },
+        { x + w - thick, y + h - cornerLen, thick, cornerLen },
+    }
+
+    for i = 1, 8 do
+        local c = coords[i]
+        local sh = cache.CornerShadows[i]
+        local ln = cache.CornerLines[i]
+
+        sh.Position = UDim2.new(0, c[1] - 1, 0, c[2] - 1)
+        sh.Size = UDim2.new(0, c[3] + 2, 0, c[4] + 2)
+        sh.Visible = true
+
+        ln.Position = UDim2.new(0, c[1], 0, c[2])
+        ln.Size = UDim2.new(0, c[3], 0, c[4])
+        ln.BackgroundColor3 = color
+        ln.Visible = true
+    end
+end
+
+local lastEspTick = 0
+function VisualOverlay.Update()
+    if State.Unloaded or not Camera then return end
+    if tick() - lastEspTick < 0.025 then return end
+    lastEspTick = tick()
+
+    local isRage = State.Rage.EspEnabled
+    local isLegit = State.Legit.EspEnabled and not isRage
+    local vpSize = Camera.ViewportSize
+    local screenCenter = Vector2.new(vpSize.X * 0.5, vpSize.Y * 0.5)
+
     for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and player.Character and player.Character.Parent then
-            activePlayers[player] = true
+        if player ~= LocalPlayer then
+            if not EspCache[player] then
+                VisualOverlay.CreatePlayerEsp(player)
+            end
+
+            local cache = EspCache[player]
             local char = player.Character
-            local hum = char:FindFirstChildOfClass("Humanoid")
-            local targetPart = GetTargetPart(char, "Head")
-            
-            if hum and targetPart then
-                local dist = (myPos - targetPart.Position).Magnitude
-                
-                -- ESP видит сквозь стены (без проверки видимости)
-                if dist <= State.ESPDistance then
-                    if not espGuis[player] then
-                        local bb = Instance.new("BillboardGui")
-                        bb.Size = UDim2.fromOffset(160, 40)
-                        bb.StudsOffset = Vector3.new(0, 3, 0)
-                        bb.AlwaysOnTop = true
-                        bb.Parent = espFolder
-                        
-                        local nameLbl = Instance.new("TextLabel")
-                        nameLbl.Size = UDim2.new(1, 0, 0, 14)
-                        nameLbl.BackgroundTransparency = 1
-                        nameLbl.TextColor3 = Color3.fromRGB(255, 255, 255)
-                        nameLbl.TextStrokeTransparency = 0.1
-                        nameLbl.Font = Enum.Font.GothamBold
-                        nameLbl.TextSize = 11
-                        nameLbl.Parent = bb
-                        
-                        local hpBg = Instance.new("Frame")
-                        hpBg.Size = UDim2.new(1, 0, 0, 12)
-                        hpBg.Position = UDim2.new(0, 0, 0, 16)
-                        hpBg.BackgroundColor3 = Color3.fromRGB(24, 24, 28)
-                        hpBg.Parent = bb
-                        Utils.Style(hpBg, 3, Color3.fromRGB(0, 0, 0), 1)
-                        
-                        local hpFill = Instance.new("Frame")
-                        hpFill.Size = UDim2.new(1, 0, 1, 0)
-                        hpFill.BackgroundColor3 = Color3.fromRGB(65, 235, 85)
-                        hpFill.Parent = hpBg
-                        Utils.Style(hpFill, 3, nil)
-                        
-                        local hpText = Instance.new("TextLabel")
-                        hpText.Size = UDim2.fromScale(1, 1)
-                        hpText.BackgroundTransparency = 1
-                        hpText.TextColor3 = Color3.fromRGB(255, 255, 255)
-                        hpText.TextStrokeTransparency = 0.05
-                        hpText.Font = Enum.Font.GothamBold
-                        hpText.TextSize = 9
-                        hpText.ZIndex = 3
-                        hpText.Parent = hpBg
-                        
-                        espGuis[player] = { gui = bb, name = nameLbl, hpBg = hpBg, hpFill = hpFill, hpText = hpText }
-                    end
-                    
-                    -- Highlight (обводка видна сквозь стены)
-                    if State.ESPOutline then
-                        if not highlights[player] or highlights[player].Parent ~= char then
-                            if highlights[player] then pcall(function() highlights[player]:Destroy() end) end
-                            local hl = Instance.new("Highlight")
-                            hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-                            hl.FillColor = Color3.fromRGB(255, 50, 50)
-                            hl.FillTransparency = 0.5
-                            hl.OutlineColor = Color3.fromRGB(255, 50, 50)
-                            hl.Parent = char
-                            highlights[player] = hl
-                        end
-                        highlights[player].Enabled = true
-                    end
-                    
-                    local data = espGuis[player]
-                    data.gui.Adornee = targetPart
-                    data.gui.Enabled = true
-                    data.name.Text = string.format("[%dm] %s", math.floor(dist), player.DisplayName)
-                    
-                    if State.ESPHealth then
-                        data.hpBg.Visible = true
-                        local hpRatio = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
-                        data.hpFill.Size = UDim2.new(hpRatio, 0, 1, 0)
-                        data.hpText.Text = string.format("HP: %d/%d", math.floor(hum.Health), math.floor(hum.MaxHealth))
-                        data.hpFill.BackgroundColor3 = (hpRatio < 0.3 and Color3.fromRGB(235, 65, 65)) or (hpRatio < 0.65 and Color3.fromRGB(240, 190, 50)) or Color3.fromRGB(60, 215, 80)
+
+            if (not isRage and not isLegit) or not Utils.IsAlive(char) then
+                HideAllElements(cache)
+                if HighlightCache[player] then HighlightCache[player].Enabled = false end
+                if ParticleCache[player] then ParticleCache[player].Enabled = false end
+            else
+                local head = Utils.GetBodyPart(char, "Head")
+                local hrp = Utils.GetBodyPart(char, "HumanoidRootPart")
+                local hum = char:FindFirstChild("Humanoid")
+
+                if head and hrp and hum then
+                    local distStuds = (hrp.Position - Camera.CFrame.Position).Magnitude
+                    local maxDist = isRage and State.Rage.EspMaxDist or State.Legit.EspMaxDist
+                    local isVis = Utils.IsVisible(head, char)
+                    local allowedByVis = isRage or (not State.Legit.EspVisibleOnly) or isVis
+
+                    if distStuds > maxDist or not allowedByVis then
+                        HideAllElements(cache)
+                        if HighlightCache[player] then HighlightCache[player].Enabled = false end
+                        if ParticleCache[player] then ParticleCache[player].Enabled = false end
                     else
-                        data.hpBg.Visible = false
+                        local accent = isRage and Utils.Colors.RageAccent or Utils.Colors.LegitAccent
+                        local distMeters = math.floor(distStuds / 3.57)
+                        local hpRatio = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
+
+                        -- Плавное дотягивание призрачной полоски урона
+                        if cache.GhostRatio > hpRatio then
+                            cache.GhostRatio = math.max(hpRatio, cache.GhostRatio - 0.03)
+                        else
+                            cache.GhostRatio = hpRatio
+                        end
+
+                        local topPos, topOn = Camera:WorldToViewportPoint(head.Position + Vector3.new(0, 1.15, 0))
+                        local botPos, botOn = Camera:WorldToViewportPoint(hrp.Position - Vector3.new(0, 2.95, 0))
+                        local headScreen, headOn = Camera:WorldToViewportPoint(head.Position)
+
+                        local onScreen = topOn and botOn and topPos.Z > 0
+
+                        -- Индикатор цели за пределами экрана (Offscreen Radar Arrow)
+                        local showOff = (isRage and State.Rage.ShowOffscreen) or (isLegit and State.Legit.ShowOffscreen)
+                        if not onScreen then
+                            HideAllElements(cache)
+                            if showOff then
+                                local rel = Camera.CFrame:PointToObjectSpace(hrp.Position)
+                                local angle = math.atan2(-rel.Y, rel.X)
+                                local radius = math.min(vpSize.X, vpSize.Y) * 0.36
+                                local arrowPos = screenCenter + Vector2.new(math.cos(angle) * radius, math.sin(angle) * radius)
+                                cache.OffscreenDot.Position = UDim2.new(0, arrowPos.X, 0, arrowPos.Y)
+                                cache.OffscreenDot.Rotation = math.deg(angle) + 45
+                                cache.OffscreenDot.BackgroundColor3 = accent
+                                cache.OffscreenDot.Visible = true
+                            end
+                        else
+                            cache.OffscreenDot.Visible = false
+
+                            local boxH = math.max(math.abs(botPos.Y - topPos.Y), 14)
+                            local boxW = boxH * 0.56
+                            local boxX = topPos.X - boxW * 0.5
+                            local boxY = topPos.Y
+
+                            -- 1. Стиль бокса (Corners / Full / Off)
+                            local boxStyle = isRage and State.Rage.BoxStyle or State.Legit.BoxStyle
+                            if boxStyle == "Corners" then
+                                cache.FullBox.Visible = false
+                                DrawCornerBox(cache, boxX, boxY, boxW, boxH, accent)
+                            elseif boxStyle == "Full" then
+                                for i = 1, 8 do
+                                    cache.CornerShadows[i].Visible = false
+                                    cache.CornerLines[i].Visible = false
+                                end
+                                cache.FullBox.Position = UDim2.new(0, boxX, 0, boxY)
+                                cache.FullBox.Size = UDim2.new(0, boxW, 0, boxH)
+                                cache.FullBox.BackgroundColor3 = accent
+                                cache.FullStroke.Color = accent
+                                cache.FullBox.Visible = true
+                            else
+                                cache.FullBox.Visible = false
+                                for i = 1, 8 do
+                                    cache.CornerShadows[i].Visible = false
+                                    cache.CornerLines[i].Visible = false
+                                end
+                            end
+
+                            -- 2. Вертикальная полоска HP с градиентом и следом урона
+                            local showHp = (isRage and State.Rage.ShowHpBar) or (isLegit and State.Legit.ShowHpBar)
+                            if showHp then
+                                local barW = isRage and 4 or 3
+                                cache.HpBg.Position = UDim2.new(0, boxX - (barW + 4), 0, boxY)
+                                cache.HpBg.Size = UDim2.new(0, barW, 0, boxH)
+                                cache.HpGhost.Size = UDim2.new(1, 0, cache.GhostRatio, 0)
+                                cache.HpFill.Size = UDim2.new(1, 0, hpRatio, 0)
+
+                                if isRage and hpRatio < 0.35 then
+                                    local pulse = 0.5 + 0.5 * math.sin(tick() * 14)
+                                    cache.HpFill.BackgroundColor3 = Color3.fromRGB(255, math.floor(70 * pulse), math.floor(70 * pulse))
+                                else
+                                    cache.HpFill.BackgroundColor3 = Utils.GetHealthColor(hpRatio)
+                                end
+                                cache.HpBg.Visible = true
+                            else
+                                cache.HpBg.Visible = false
+                            end
+
+                            -- 3. Имя игрока сверху бокса
+                            local showName = isRage or State.Legit.ShowName
+                            if showName then
+                                cache.NameLabel.Position = UDim2.new(0, boxX + boxW * 0.5, 0, boxY - 3)
+                                cache.NameLabel.Text = player.Name
+                                cache.NameLabel.TextColor3 = isRage and Utils.Colors.Text or Utils.Colors.White
+                                cache.NameLabel.Visible = true
+                            else
+                                cache.NameLabel.Visible = false
+                            end
+
+                            -- 4. Нижняя сводка (Дистанция + HP / Статус видимости)
+                            if isRage then
+                                cache.InfoBadge.Visible = State.Rage.ShowInfoText
+                                cache.InfoBadge.Position = UDim2.new(0, boxX + boxW * 0.5, 0, boxY + boxH + 3)
+                                cache.InfoBadge.Text = string.format("%dm • %d HP", distMeters, math.floor(hum.Health))
+                                cache.InfoBadge.TextColor3 = Utils.Colors.RageAccent
+                            else
+                                if State.Legit.ShowDistance then
+                                    cache.InfoBadge.Position = UDim2.new(0, boxX + boxW * 0.5, 0, boxY + boxH + 3)
+                                    local tag = isVis and "VIS" or "OCC"
+                                    cache.InfoBadge.Text = string.format("%dm [%s]", distMeters, tag)
+                                    cache.InfoBadge.TextColor3 = isVis and Utils.Colors.LegitAccent or Utils.Colors.SubText
+                                    cache.InfoBadge.Visible = true
+                                else
+                                    cache.InfoBadge.Visible = false
+                                end
+                            end
+
+                            -- 5. Прицельный маркер на голове (Head Dot)
+                            local showDot = (isRage and State.Rage.ShowHeadDot) or (isLegit and State.Legit.ShowHeadDot)
+                            if showDot and headOn then
+                                cache.HeadDot.Position = UDim2.new(0, headScreen.X, 0, headScreen.Y)
+                                cache.HeadDot.BackgroundColor3 = isVis and Utils.Colors.White or Utils.Colors.SubText
+                                cache.HeadDotStroke.Color = accent
+                                cache.HeadDot.Visible = true
+                            else
+                                cache.HeadDot.Visible = false
+                            end
+
+                            -- 6. Трассер от низа экрана (Snapline)
+                            local showTracer = (isRage and State.Rage.ShowTracers) or (isLegit and State.Legit.ShowTracers)
+                            if showTracer then
+                                local origin2D = Vector2.new(vpSize.X * 0.5, vpSize.Y - 12)
+                                local target2D = Vector2.new(boxX + boxW * 0.5, boxY + boxH)
+                                local alphaTrans = math.clamp(0.2 + (distStuds / maxDist) * 0.55, 0.2, 0.75)
+                                DrawLine2D(cache.Tracer, origin2D, target2D, accent, 1.2, alphaTrans)
+                            else
+                                cache.Tracer.Visible = false
+                            end
+
+                            -- 7. Скелет (R6 / R15)
+                            local showSkel = (isRage and State.Rage.ShowSkeleton) or (isLegit and State.Legit.ShowSkeleton)
+                            if showSkel then
+                                local isR15 = char:FindFirstChild("UpperTorso") ~= nil
+                                local map = isR15 and SkeletonConnectionsR15 or SkeletonConnectionsR6
+                                for idx, pair in ipairs(map) do
+                                    local line = cache.SkelLines[idx]
+                                    local pA = char:FindFirstChild(pair[1])
+                                    local pB = char:FindFirstChild(pair[2])
+                                    if line and pA and pB and pA:IsA("BasePart") and pB:IsA("BasePart") then
+                                        local vA, onA = Camera:WorldToViewportPoint(pA.Position)
+                                        local vB, onB = Camera:WorldToViewportPoint(pB.Position)
+                                        if onA and onB and vA.Z > 0 and vB.Z > 0 then
+                                            DrawLine2D(line, vA, vB, accent, 1.4, 0.15)
+                                        else
+                                            line.Visible = false
+                                        end
+                                    elseif line then
+                                        line.Visible = false
+                                    end
+                                end
+                            else
+                                for _, ln in ipairs(cache.SkelLines) do ln.Visible = false end
+                            end
+                        end
+
+                        -- 8. Highlight с плавным дыханием (Rage)
+                        if isRage and State.Rage.ShowHighlight then
+                            local hl = HighlightCache[player]
+                            if not hl or hl.Parent ~= char then
+                                if hl then hl:Destroy() end
+                                hl = Instance.new("Highlight")
+                                hl.Name = "BRM5_Highlight"
+                                hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+                                hl.FillColor = Utils.Colors.RageAccent
+                                hl.OutlineColor = Utils.Colors.White
+                                hl.OutlineTransparency = 0.15
+                                hl.Parent = char
+                                HighlightCache[player] = hl
+                            end
+                            hl.FillTransparency = 0.68 + 0.12 * math.sin(tick() * 4)
+                            hl.Enabled = true
+                        elseif HighlightCache[player] then
+                            HighlightCache[player].Enabled = false
+                        end
+
+                        -- 9. Партиклы над головой (Rage)
+                        if isRage and State.Rage.ShowParticles then
+                            local pe = ParticleCache[player]
+                            if not pe or pe.Parent ~= head then
+                                if pe then pe:Destroy() end
+                                pe = Instance.new("ParticleEmitter")
+                                pe.Name = "BRM5_HeadParticle"
+                                pe.Rate = 5
+                                pe.Lifetime = NumberRange.new(0.8, 1.2)
+                                pe.Speed = NumberRange.new(1, 2)
+                                pe.Size = NumberSequence.new(0.35, 0)
+                                pe.Color = ColorSequence.new(Utils.Colors.RageAccent)
+                                pe.Parent = head
+                                ParticleCache[player] = pe
+                            end
+                            pe.Enabled = true
+                        elseif ParticleCache[player] then
+                            ParticleCache[player].Enabled = false
+                        end
                     end
-                else
-                    if espGuis[player] then espGuis[player].gui.Enabled = false end
-                    if highlights[player] then highlights[player].Enabled = false end
                 end
             end
         end
     end
-    
-    -- Чистка ESP для вышедших/умерших игроков
-    for plr, d in pairs(espGuis) do
-        if not activePlayers[plr] then
-            if d.gui then d.gui:Destroy() end
-            if highlights[plr] then highlights[plr]:Destroy() end
-            espGuis[plr] = nil
-            highlights[plr] = nil
-        end
-    end
 end
 
--- Радиус ESP
-local radiusCircle = nil
-local function UpdateRadius()
-    if not State.ESPRadius then
-        if radiusCircle then radiusCircle.Transparency = 1 end
+-- // 6. МОДУЛЬ WEAPON MODIFIER (NO RECOIL, NO SHAKE, AUTO FIRE)
+local WeaponModifier = {}
+local lastCamPitch = 0
+local lastShotTime = 0
+
+function WeaponModifier.Step()
+    if State.Unloaded or not Camera then return end
+
+    local isRage = State.Rage.NoRecoil or State.Rage.NoShake or State.Rage.AutoFire
+    local isLegit = State.Legit.NoRecoil or State.Legit.NoShake
+
+    if not isRage and not isLegit then
+        local _, rx, _ = Camera.CFrame:ToOrientation()
+        lastCamPitch = rx
         return
     end
-    if not radiusCircle then
-        radiusCircle = Instance.new("Part")
-        radiusCircle.Shape = Enum.PartType.Cylinder
-        radiusCircle.Anchored = true
-        radiusCircle.CanCollide = false
-        radiusCircle.Material = Enum.Material.Neon
-        radiusCircle.Color = Color3.fromRGB(50, 150, 255)
-        radiusCircle.Transparency = 0.8
-        radiusCircle.Parent = Workspace
-    end
-    if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
-        radiusCircle.Size = Vector3.new(1, State.ESPDistance * 2, State.ESPDistance * 2)
-        radiusCircle.CFrame = LocalPlayer.Character.HumanoidRootPart.CFrame * CFrame.new(0, -3, 0) * CFrame.Angles(0, 0, math.rad(90))
-        radiusCircle.Transparency = 0.8
-    end
-end
 
--- No Recoil (отключение через хук remote)
-if not Env.BRM5_RecoilHooked then
-    pcall(function()
-        local old
-        old = hookmetamethod(game, "__namecall", function(self, ...)
-            local cs = Env.BRM5_State
-            if cs and cs.Active and cs.NoRecoil then
-                local m = getnamecallmethod()
-                if m == "FireServer" or m == "InvokeServer" then
-                    local rName = string.lower(tostring(self.Name))
-                    if string.find(rName, "recoil", 1, true) or string.find(rName, "camerashake", 1, true) or string.find(rName, "kick", 1, true) or string.find(rName, "aimpunch", 1, true) then
-                        return nil
-                    end
+    local cf = Camera.CFrame
+    local rx, ry, rz = cf:ToOrientation()
+
+    local isFiring = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
+    if isFiring then
+        local deltaPitch = rx - lastCamPitch
+        if deltaPitch > 0.004 and deltaPitch < 0.25 then
+            local factor = State.Rage.NoRecoil and 1.0 or (State.Legit.NoRecoil and State.Legit.RecoilStrength or 0)
+            if factor > 0 then
+                local correctedPitch = rx - (deltaPitch * factor)
+                Camera.CFrame = CFrame.new(cf.Position) * CFrame.fromOrientation(correctedPitch, ry, rz)
+                rx = correctedPitch
+            end
+        end
+    end
+
+    if State.Rage.NoShake or State.Legit.NoShake then
+        if math.abs(rz) > 0.0005 then
+            Camera.CFrame = CFrame.new(Camera.CFrame.Position) * CFrame.fromOrientation(rx, ry, 0)
+        end
+    end
+
+    lastCamPitch = rx
+
+    if State.Rage.AutoFire and State.Rage.AimEnabled then
+        local target = TargetAssist.GetBestTarget()
+        if target and (tick() - lastShotTime > 0.12) then
+            lastShotTime = tick()
+            pcall(function()
+                if mouse1press and mouse1release then
+                    mouse1press()
+                    task.delay(0.03, mouse1release)
                 end
-            end
-            return old(self, ...)
+            end)
+        end
+    end
+end
+
+-- // 7. ПОСТРОЕНИЕ УЛУЧШЕННОГО UI
+local ScreenGui
+local MainWindow
+local MainStroke
+local HeaderAccentLine
+local MiniIcon
+local ScreenLockBtn
+local TopLockBtn
+local HudHolder
+local Pages = {}
+
+local function CountActiveFeatures(tbl)
+    local active = 0
+    for _, v in pairs(tbl) do
+        if v == true then
+            active += 1
+        end
+    end
+    return active
+end
+
+local function SwitchPage(pageName)
+    State.ActiveMode = pageName
+    for name, frame in pairs(Pages) do
+        frame.Visible = (name == pageName)
+    end
+
+    -- Динамическая подсветка рамки окна под выбранный режим
+    local targetAccent = Utils.Colors.Border
+    if pageName == "Legit" then
+        targetAccent = Utils.Colors.LegitAccent
+    elseif pageName == "Rage" then
+        targetAccent = Utils.Colors.RageAccent
+    end
+
+    if MainStroke then
+        TweenService:Create(MainStroke, TweenInfo.new(0.25), { Color = targetAccent }):Play()
+    end
+    if HeaderAccentLine then
+        local lineColor = (pageName == "Main") and Utils.Colors.LegitAccent or targetAccent
+        TweenService:Create(HeaderAccentLine, TweenInfo.new(0.25), { BackgroundColor3 = lineColor }):Play()
+    end
+    if UpdateCardBadgesCallback then
+        UpdateCardBadgesCallback()
+    end
+end
+
+-- // Обновление визуального состояния заморозки позиций (UI Lock)
+local function UpdateLockVisuals()
+    local locked = State.UiLocked
+    local targetColor = locked and Utils.Colors.LockAccent or Utils.Colors.SubText
+    local borderColor = locked and Utils.Colors.LockAccent or Utils.Colors.Border
+
+    if ScreenLockBtn then
+        ScreenLockBtn.Text = locked and "🔒 LOCKED" or "🔓 FREE"
+        TweenService:Create(ScreenLockBtn, TweenInfo.new(0.2), {
+            TextColor3 = targetColor,
+            BackgroundColor3 = locked and Color3.fromRGB(32, 26, 14) or Utils.Colors.Bg
+        }):Play()
+        local st = ScreenLockBtn:FindFirstChildOfClass("UIStroke")
+        if st then
+            TweenService:Create(st, TweenInfo.new(0.2), { Color = borderColor }):Play()
+        end
+    end
+
+    if TopLockBtn then
+        TopLockBtn.Text = locked and "🔒" or "🔓"
+        TweenService:Create(TopLockBtn, TweenInfo.new(0.2), {
+            TextColor3 = targetColor
+        }):Play()
+    end
+
+    for _, hudData in pairs(PinnedHudButtons) do
+        if hudData.Stroke then
+            local active = hudData.IsActive()
+            local c = active and hudData.Accent or (locked and Utils.Colors.LockAccent or Utils.Colors.Border)
+            TweenService:Create(hudData.Stroke, TweenInfo.new(0.2), { Color = c }):Play()
+        end
+    end
+end
+
+local function ToggleUiLock()
+    State.UiLocked = not State.UiLocked
+    UpdateLockVisuals()
+    if State.UiLocked then
+        Utils.Notify("UI Заморожен", "Меню и все плашки зафиксированы", Utils.Colors.LockAccent)
+    else
+        Utils.Notify("UI Разблокирован", "Можно перетаскивать меню и плашки", Utils.Colors.LegitAccent)
+    end
+end
+
+-- // Вынос функции на экран в виде интерактивной плашки (HUD Pin)
+local function TogglePinnedHudButton(pinId, shortTitle, tbl, key, accentColor, onChangeCallback)
+    if PinnedHudButtons[pinId] then
+        local existing = PinnedHudButtons[pinId]
+        PinnedHudButtons[pinId] = nil
+        if existing.Button and existing.Button.Parent then
+            local closeTw = TweenService:Create(
+                existing.Button,
+                TweenInfo.new(0.2, Enum.EasingStyle.Back, Enum.EasingDirection.In),
+                { Size = UDim2.new(0, 0, 0, 0), BackgroundTransparency = 1 }
+            )
+            closeTw:Play()
+            closeTw.Completed:Connect(function()
+                if existing.Button then existing.Button:Destroy() end
+            end)
+        end
+        return false
+    end
+
+    if not HudHolder then return false end
+
+    local count = 0
+    for _ in pairs(PinnedHudButtons) do count += 1 end
+
+    local btn = Utils.Create("TextButton", {
+        Name = "HUD_" .. pinId,
+        Size = UDim2.new(0, 0, 0, 0),
+        Position = UDim2.new(0, 20 + (count % 3) * 130, 0, 82 + math.floor(count / 3) * 44),
+        BackgroundColor3 = Utils.Colors.Panel,
+        BackgroundTransparency = 0.06,
+        Text = "",
+        AutoButtonColor = false,
+        ClipsDescendants = true
+    }, HudHolder)
+    Utils.AddCorner(btn, 8)
+    local stroke = Utils.AddStroke(btn, tbl[key] and accentColor or Utils.Colors.Border, 1.5)
+
+    local indicator = Utils.Create("Frame", {
+        Size = UDim2.new(0, 5, 0, 20),
+        Position = UDim2.new(0, 7, 0.5, -10),
+        BackgroundColor3 = tbl[key] and accentColor or Color3.fromRGB(58, 62, 76),
+        BorderSizePixel = 0
+    }, btn)
+    Utils.AddCorner(indicator, 3)
+
+    local lbl = Utils.Create("TextLabel", {
+        Size = UDim2.new(1, -22, 1, 0),
+        Position = UDim2.new(0, 17, 0, 0),
+        BackgroundTransparency = 1,
+        Text = shortTitle,
+        TextColor3 = tbl[key] and Utils.Colors.Text or Utils.Colors.SubText,
+        Font = Enum.Font.GothamBold,
+        TextSize = 11,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd
+    }, btn)
+
+    Utils.MakeDraggable(btn, btn)
+
+    local function RefreshHudBtn()
+        local active = tbl[key]
+        local strokeColor = active and accentColor or (State.UiLocked and Utils.Colors.LockAccent or Utils.Colors.Border)
+        TweenService:Create(stroke, TweenInfo.new(0.18), { Color = strokeColor }):Play()
+        TweenService:Create(indicator, TweenInfo.new(0.18), {
+            BackgroundColor3 = active and accentColor or Color3.fromRGB(58, 62, 76)
+        }):Play()
+        TweenService:Create(lbl, TweenInfo.new(0.18), {
+            TextColor3 = active and Utils.Colors.Text or Utils.Colors.SubText
+        }):Play()
+        if UpdateCardBadgesCallback then UpdateCardBadgesCallback() end
+    end
+
+    btn.MouseButton1Click:Connect(function()
+        tbl[key] = not tbl[key]
+        if ToggleSyncCallbacks[pinId] then
+            ToggleSyncCallbacks[pinId]()
+        end
+        RefreshHudBtn()
+        if onChangeCallback then onChangeCallback(tbl[key]) end
+    end)
+
+    PinnedHudButtons[pinId] = {
+        Button = btn,
+        Stroke = stroke,
+        Accent = accentColor,
+        Refresh = RefreshHudBtn,
+        IsActive = function() return tbl[key] end
+    }
+
+    TweenService:Create(
+        btn,
+        TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+        { Size = UDim2.new(0, 124, 0, 36) }
+    ):Play()
+
+    return true
+end
+
+-- // Секция-заголовок с декоративной линией
+local function AddSectionHeader(parent, text, accentColor)
+    local holder = Utils.Create("Frame", {
+        Size = UDim2.new(1, 0, 0, 24),
+        BackgroundTransparency = 1
+    }, parent)
+
+    Utils.Create("Frame", {
+        Size = UDim2.new(0, 3, 0, 13),
+        Position = UDim2.new(0, 2, 0.5, -6),
+        BackgroundColor3 = accentColor,
+        BorderSizePixel = 0
+    }, holder)
+
+    Utils.Create("TextLabel", {
+        Size = UDim2.new(1, -12, 1, 0),
+        Position = UDim2.new(0, 10, 0, 0),
+        BackgroundTransparency = 1,
+        Text = string.upper(text),
+        TextColor3 = accentColor,
+        Font = Enum.Font.GothamBold,
+        TextSize = 11,
+        TextXAlignment = Enum.TextXAlignment.Left
+    }, holder)
+
+    return holder
+end
+
+-- // Переключатель (Toggle) с кнопкой выноса на экран (HUD)
+local function AddToggle(parent, pinId, labelText, shortHudTitle, tbl, key, accentColor, callback)
+    local row = Utils.Create("TextButton", {
+        Size = UDim2.new(1, 0, 0, 36),
+        BackgroundColor3 = Utils.Colors.Element,
+        Text = "",
+        AutoButtonColor = false
+    }, parent)
+    Utils.AddCorner(row, 7)
+    local rowStroke = Utils.AddStroke(row, Utils.Colors.Border, 1)
+
+    Utils.Create("TextLabel", {
+        Size = UDim2.new(1, -106, 1, 0),
+        Position = UDim2.new(0, 12, 0, 0),
+        BackgroundTransparency = 1,
+        Text = labelText,
+        TextColor3 = Utils.Colors.Text,
+        Font = Enum.Font.GothamMedium,
+        TextSize = 12,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd
+    }, row)
+
+    local pinBtn = Utils.Create("TextButton", {
+        Size = UDim2.new(0, 36, 0, 20),
+        Position = UDim2.new(1, -92, 0.5, -10),
+        BackgroundColor3 = Utils.Colors.Panel,
+        Text = "HUD",
+        TextColor3 = Utils.Colors.SubText,
+        Font = Enum.Font.GothamBold,
+        TextSize = 10
+    }, row)
+    Utils.AddCorner(pinBtn, 4)
+    local pinStroke = Utils.AddStroke(pinBtn, Utils.Colors.Border, 1)
+
+    local switchBg = Utils.Create("Frame", {
+        Size = UDim2.new(0, 40, 0, 20),
+        Position = UDim2.new(1, -48, 0.5, -10),
+        BackgroundColor3 = tbl[key] and accentColor or Color3.fromRGB(42, 45, 58)
+    }, row)
+    Utils.AddCorner(switchBg, 10)
+
+    local knob = Utils.Create("Frame", {
+        Size = UDim2.new(0, 14, 0, 14),
+        Position = tbl[key] and UDim2.new(1, -17, 0.5, -7) or UDim2.new(0, 3, 0.5, -7),
+        BackgroundColor3 = Utils.Colors.White
+    }, switchBg)
+    Utils.AddCorner(knob, 7)
+
+    local function RefreshSwitch()
+        local active = tbl[key]
+        TweenService:Create(switchBg, TweenInfo.new(0.18), {
+            BackgroundColor3 = active and accentColor or Color3.fromRGB(42, 45, 58)
+        }):Play()
+        TweenService:Create(knob, TweenInfo.new(0.18), {
+            Position = active and UDim2.new(1, -17, 0.5, -7) or UDim2.new(0, 3, 0.5, -7)
+        }):Play()
+        TweenService:Create(rowStroke, TweenInfo.new(0.18), {
+            Color = active and accentColor or Utils.Colors.Border,
+            Transparency = active and 0.45 or 0
+        }):Play()
+        if PinnedHudButtons[pinId] then
+            PinnedHudButtons[pinId].Refresh()
+        end
+        if UpdateCardBadgesCallback then UpdateCardBadgesCallback() end
+    end
+
+    ToggleSyncCallbacks[pinId] = RefreshSwitch
+    if tbl[key] then
+        rowStroke.Color = accentColor
+        rowStroke.Transparency = 0.45
+    end
+
+    row.MouseButton1Click:Connect(function()
+        tbl[key] = not tbl[key]
+        RefreshSwitch()
+        if callback then callback(tbl[key]) end
+    end)
+
+    pinBtn.MouseButton1Click:Connect(function()
+        local isPinned = TogglePinnedHudButton(pinId, shortHudTitle, tbl, key, accentColor, callback)
+        TweenService:Create(pinBtn, TweenInfo.new(0.18), {
+            TextColor3 = isPinned and accentColor or Utils.Colors.SubText,
+            BackgroundColor3 = isPinned and Utils.Colors.ElementHover or Utils.Colors.Panel
+        }):Play()
+        TweenService:Create(pinStroke, TweenInfo.new(0.18), {
+            Color = isPinned and accentColor or Utils.Colors.Border
+        }):Play()
+    end)
+
+    return row
+end
+
+-- // Интерактивный сенсорный слайдер (плавная регулировка мышью и пальцем)
+local function AddSlider(parent, labelText, tbl, key, minVal, maxVal, step, suffix, accentColor, callback)
+    local card = Utils.Create("Frame", {
+        Size = UDim2.new(1, 0, 0, 48),
+        BackgroundColor3 = Utils.Colors.Element
+    }, parent)
+    Utils.AddCorner(card, 7)
+    Utils.AddStroke(card, Utils.Colors.Border, 1)
+
+    Utils.Create("TextLabel", {
+        Size = UDim2.new(0.65, 0, 0, 22),
+        Position = UDim2.new(0, 12, 0, 4),
+        BackgroundTransparency = 1,
+        Text = labelText,
+        TextColor3 = Utils.Colors.Text,
+        Font = Enum.Font.GothamMedium,
+        TextSize = 12,
+        TextXAlignment = Enum.TextXAlignment.Left
+    }, card)
+
+    local function FormatVal(v)
+        if step < 1 then
+            return string.format("%.2f%s", v, suffix or "")
+        end
+        return string.format("%d%s", math.floor(v + 0.5), suffix or "")
+    end
+
+    local valLabel = Utils.Create("TextLabel", {
+        Size = UDim2.new(0.35, -12, 0, 22),
+        Position = UDim2.new(0.65, 0, 0, 4),
+        BackgroundTransparency = 1,
+        Text = FormatVal(tbl[key]),
+        TextColor3 = accentColor,
+        Font = Enum.Font.GothamBold,
+        TextSize = 12,
+        TextXAlignment = Enum.TextXAlignment.Right
+    }, card)
+
+    local track = Utils.Create("TextButton", {
+        Size = UDim2.new(1, -24, 0, 8),
+        Position = UDim2.new(0, 12, 0, 31),
+        BackgroundColor3 = Utils.Colors.Panel,
+        Text = "",
+        AutoButtonColor = false
+    }, card)
+    Utils.AddCorner(track, 4)
+
+    local initRatio = math.clamp((tbl[key] - minVal) / (maxVal - minVal), 0, 1)
+    local fill = Utils.Create("Frame", {
+        Size = UDim2.new(initRatio, 0, 1, 0),
+        BackgroundColor3 = accentColor,
+        BorderSizePixel = 0
+    }, track)
+    Utils.AddCorner(fill, 4)
+
+    local thumb = Utils.Create("Frame", {
+        Size = UDim2.new(0, 14, 0, 14),
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(initRatio, 0, 0.5, 0),
+        BackgroundColor3 = Utils.Colors.White
+    }, track)
+    Utils.AddCorner(thumb, 7)
+
+    local draggingSlider = false
+    local function UpdateFromInput(inputX)
+        local absPos = track.AbsolutePosition.X
+        local absSize = math.max(track.AbsoluteSize.X, 1)
+        local ratio = math.clamp((inputX - absPos) / absSize, 0, 1)
+        local raw = minVal + (maxVal - minVal) * ratio
+        local snapped = math.floor((raw / step) + 0.5) * step
+        snapped = math.clamp(snapped, minVal, maxVal)
+        if step < 1 then
+            snapped = math.floor(snapped * 100 + 0.5) / 100
+        end
+
+        tbl[key] = snapped
+        local finalRatio = (snapped - minVal) / (maxVal - minVal)
+        fill.Size = UDim2.new(finalRatio, 0, 1, 0)
+        thumb.Position = UDim2.new(finalRatio, 0, 0.5, 0)
+        valLabel.Text = FormatVal(snapped)
+        if callback then callback(snapped) end
+    end
+
+    track.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            draggingSlider = true
+            UpdateFromInput(input.Position.X)
+        end
+    end)
+
+    local cMove = UserInputService.InputChanged:Connect(function(input)
+        if draggingSlider and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            UpdateFromInput(input.Position.X)
+        end
+    end)
+
+    local cEnd = UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            draggingSlider = false
+        end
+    end)
+
+    table.insert(Connections, cMove)
+    table.insert(Connections, cEnd)
+
+    return card
+end
+
+-- // Селектор вариантов (CycleButton)
+local function AddCycleButton(parent, labelText, tbl, key, options, formatter, accentColor, callback)
+    local row = Utils.Create("TextButton", {
+        Size = UDim2.new(1, 0, 0, 36),
+        BackgroundColor3 = Utils.Colors.Element,
+        Text = "",
+        AutoButtonColor = false
+    }, parent)
+    Utils.AddCorner(row, 7)
+    Utils.AddStroke(row, Utils.Colors.Border, 1)
+
+    Utils.Create("TextLabel", {
+        Size = UDim2.new(0.58, 0, 1, 0),
+        Position = UDim2.new(0, 12, 0, 0),
+        BackgroundTransparency = 1,
+        Text = labelText,
+        TextColor3 = Utils.Colors.Text,
+        Font = Enum.Font.GothamMedium,
+        TextSize = 12,
+        TextXAlignment = Enum.TextXAlignment.Left
+    }, row)
+
+    local valBadge = Utils.Create("TextLabel", {
+        Size = UDim2.new(0.37, -12, 0, 22),
+        Position = UDim2.new(0.63, 0, 0.5, -11),
+        BackgroundColor3 = Utils.Colors.Panel,
+        Text = formatter and formatter(tbl[key]) or tostring(tbl[key]),
+        TextColor3 = accentColor,
+        Font = Enum.Font.GothamBold,
+        TextSize = 11
+    }, row)
+    Utils.AddCorner(valBadge, 5)
+    Utils.AddStroke(valBadge, accentColor, 1, 0.65)
+
+    local currentIdx = 1
+    for i, opt in ipairs(options) do
+        if opt == tbl[key] then
+            currentIdx = i
+            break
+        end
+    end
+
+    row.MouseButton1Click:Connect(function()
+        currentIdx = (currentIdx % #options) + 1
+        tbl[key] = options[currentIdx]
+        valBadge.Text = formatter and formatter(tbl[key]) or tostring(tbl[key])
+        if callback then callback(tbl[key]) end
+    end)
+
+    return row
+end
+
+-- // ПЛАВНАЯ АНИМИРОВАННАЯ ДЕАКТИВАЦИЯ СКРИПТА
+local function DeactivateScript()
+    if State.Unloaded then return end
+    State.Unloaded = true
+
+    for _, bindName in ipairs(RenderBindings) do
+        pcall(function()
+            RunService:UnbindFromRenderStep(bindName)
         end)
-        Env.BRM5_RecoilHooked = true
+    end
+
+    for _, conn in ipairs(Connections) do
+        pcall(function()
+            conn:Disconnect()
+        end)
+    end
+
+    HitboxModifier.RestoreAll()
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        VisualOverlay.RemovePlayerEsp(player)
+    end
+
+    if FovCircleFrame then
+        FovCircleFrame.Visible = false
+    end
+
+    local animDuration = 0.35
+    local shrinkInfo = TweenInfo.new(animDuration, Enum.EasingStyle.Back, Enum.EasingDirection.In)
+    local fadeInfo = TweenInfo.new(animDuration, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+
+    if MainWindow and MainWindow.Visible then
+        TweenService:Create(MainWindow, shrinkInfo, {
+            Size = UDim2.new(0, 0, 0, 0),
+            BackgroundTransparency = 1
+        }):Play()
+    end
+
+    if MiniIcon and MiniIcon.Visible then
+        TweenService:Create(MiniIcon, shrinkInfo, {
+            Size = UDim2.new(0, 0, 0, 0),
+            BackgroundTransparency = 1,
+            TextTransparency = 1
+        }):Play()
+    end
+
+    if ScreenLockBtn then
+        TweenService:Create(ScreenLockBtn, fadeInfo, {
+            BackgroundTransparency = 1,
+            TextTransparency = 1
+        }):Play()
+    end
+
+    for _, hudData in pairs(PinnedHudButtons) do
+        if hudData.Button and hudData.Button.Parent then
+            TweenService:Create(hudData.Button, shrinkInfo, {
+                Size = UDim2.new(0, 0, 0, 0),
+                BackgroundTransparency = 1
+            }):Play()
+        end
+    end
+
+    task.delay(animDuration + 0.05, function()
+        if ScreenGui and ScreenGui.Parent then
+            ScreenGui:Destroy()
+        end
     end)
 end
 
--- UI (уменьшенный, без лишних элементов)
-local ScreenGui = Instance.new("ScreenGui"); ScreenGui.Name = "BRM5_UI"; ScreenGui.ResetOnSpawn = false; ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling; pcall(function() ScreenGui.Parent = Utils.GuiParent() end)
+-- // Сворачивание и разворачивание главного окна
+local function SetMenuMinimized(minimize)
+    if State.Unloaded then return end
+    State.Minimized = minimize
 
--- FOV круг
-local fovCircle = Instance.new("Frame")
-fovCircle.AnchorPoint = Vector2.new(0.5, 0.5)
-fovCircle.Position = UDim2.fromScale(0.5, 0.5)
-fovCircle.BackgroundTransparency = 1
-fovCircle.BorderSizePixel = 0
-fovCircle.Visible = false
-fovCircle.ZIndex = 0
-fovCircle.Parent = ScreenGui
-local fovCorner = Instance.new("UICorner"); fovCorner.CornerRadius = UDim.new(1, 0); fovCorner.Parent = fovCircle
-local fovStroke = Instance.new("UIStroke"); fovStroke.Color = Color3.fromRGB(255, 50, 50); fovStroke.Thickness = 2; fovStroke.Transparency = 0.3; fovStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border; fovStroke.Parent = fovCircle
-
--- Главный цикл через BindToRenderStep с приоритетом ПОСЛЕ камеры игры
-RunService:BindToRenderStep("BRM5_Main", Enum.RenderPriority.Camera.Value + 10, function()
-    if not State.Active then return end
-    
-    -- Обновляем круг FOV
-    pcall(function()
-        fovCircle.Visible = State.AimbotEnabled
-        fovCircle.Size = UDim2.fromOffset(State.FOV * 2, State.FOV * 2)
-    end)
-    
-    -- Aimbot (камера)
-    if State.AimbotEnabled then
-        pcall(function()
-            local target = FindBestTarget()
-            if target then
-                local targetCFrame = CFrame.new(Camera.CFrame.Position, target.Position)
-                Camera.CFrame = Camera.CFrame:Lerp(targetCFrame, State.Smoothness)
+    if minimize then
+        local tw = TweenService:Create(
+            MainWindow,
+            TweenInfo.new(0.24, Enum.EasingStyle.Back, Enum.EasingDirection.In),
+            { Size = UDim2.new(0, 0, 0, 0) }
+        )
+        tw:Play()
+        tw.Completed:Connect(function()
+            if State.Minimized and not State.Unloaded then
+                MainWindow.Visible = false
+                MiniIcon.Size = UDim2.new(0, 0, 0, 0)
+                MiniIcon.Visible = true
+                TweenService:Create(
+                    MiniIcon,
+                    TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+                    { Size = UDim2.new(0, 52, 0, 52) }
+                ):Play()
+            end
+        end)
+    else
+        local tw = TweenService:Create(
+            MiniIcon,
+            TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+            { Size = UDim2.new(0, 0, 0, 0) }
+        )
+        tw:Play()
+        tw.Completed:Connect(function()
+            if not State.Minimized and not State.Unloaded then
+                MiniIcon.Visible = false
+                MainWindow.Size = UDim2.new(0, 0, 0, 0)
+                MainWindow.Visible = true
+                TweenService:Create(
+                    MainWindow,
+                    TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+                    { Size = UDim2.new(0, 380, 0, 470) }
+                ):Play()
             end
         end)
     end
-    
-    -- ESP и Хитбоксы
-    pcall(UpdateHitboxes)
-    pcall(UpdateESP)
-    pcall(UpdateRadius)
-end)
-
--- Меню (оставим как было, только добавим недостающее)
-local TargetSize, IconSize = UDim2.fromOffset(450, 340), UDim2.fromOffset(50, 50)
-local MainFrame = Instance.new("Frame"); MainFrame.AnchorPoint = Vector2.new(0.5, 0.5); MainFrame.Position = UDim2.fromScale(0.5, 0.5); MainFrame.Size = UDim2.fromOffset(0, 0); MainFrame.BackgroundColor3 = Theme.Background; MainFrame.ClipsDescendants = true; MainFrame.Parent = ScreenGui; Utils.Style(MainFrame, 12, Theme.Stroke, 1.2)
-local TopBar = Instance.new("Frame"); TopBar.Size = UDim2.new(1, 0, 0, 42); TopBar.BackgroundColor3 = Theme.Surface; TopBar.Parent = MainFrame; Utils.Style(TopBar, 12, nil)
-local TitleLabel = Instance.new("TextLabel"); TitleLabel.Size = UDim2.new(1, -120, 1, 0); TitleLabel.Position = UDim2.fromOffset(15, 0); TitleLabel.BackgroundTransparency = 1; TitleLabel.Text = "BLACKHAWK RM5 // ULTIMATE"; TitleLabel.TextColor3 = Theme.TextPrimary; TitleLabel.Font = Enum.Font.GothamBold; TitleLabel.TextSize = 13; TitleLabel.TextXAlignment = Enum.TextXAlignment.Left; TitleLabel.Parent = TopBar
-local MinimizeBtn = Instance.new("TextButton"); MinimizeBtn.Size = UDim2.fromOffset(32, 28); MinimizeBtn.Position = UDim2.new(1, -40, 0.5, -14); MinimizeBtn.BackgroundColor3 = Theme.Element; MinimizeBtn.Text = "—"; MinimizeBtn.TextColor3 = Theme.TextPrimary; MinimizeBtn.Font = Enum.Font.GothamBold; MinimizeBtn.TextSize = 14; MinimizeBtn.Parent = TopBar; Utils.Style(MinimizeBtn, 6, Theme.Stroke, 1)
-local MiniIcon = Instance.new("TextButton"); MiniIcon.AnchorPoint = Vector2.new(0.5, 0.5); MiniIcon.Position = UDim2.new(0.1, 0, 0.2, 0); MiniIcon.Size = UDim2.fromOffset(0, 0); MiniIcon.BackgroundColor3 = Theme.Surface; MiniIcon.Text = "BR"; MiniIcon.TextColor3 = Theme.TextPrimary; MiniIcon.Font = Enum.Font.GothamBold; MiniIcon.TextSize = 14; MiniIcon.Visible = false; MiniIcon.Parent = ScreenGui; Utils.Style(MiniIcon, 25, Theme.Stroke, 1.5)
-local Sidebar = Instance.new("Frame"); Sidebar.Size = UDim2.new(0, 120, 1, -42); Sidebar.Position = UDim2.fromOffset(0, 42); Sidebar.BackgroundColor3 = Theme.Surface; Sidebar.Parent = MainFrame
-local TabList = Instance.new("ScrollingFrame"); TabList.Size = UDim2.new(1, -16, 1, -66); TabList.Position = UDim2.fromOffset(8, 10); TabList.BackgroundTransparency = 1; TabList.ScrollBarThickness = 0; TabList.CanvasSize = UDim2.new(0, 0, 0, 0); TabList.AutomaticCanvasSize = Enum.AutomaticSize.Y; TabList.Parent = Sidebar
-local TabListLayout = Instance.new("UIListLayout"); TabListLayout.Padding = UDim.new(0, 6); TabListLayout.Parent = TabList
-local DeactivateBtn = Instance.new("TextButton"); DeactivateBtn.Size = UDim2.new(1, -16, 0, 38); DeactivateBtn.Position = UDim2.new(0, 8, 1, -46); DeactivateBtn.BackgroundColor3 = Theme.Danger; DeactivateBtn.Text = "Unload"; DeactivateBtn.TextColor3 = Theme.TextPrimary; DeactivateBtn.Font = Enum.Font.GothamSemibold; DeactivateBtn.TextSize = 13; DeactivateBtn.Parent = Sidebar; Utils.Style(DeactivateBtn, 8, Theme.DangerStroke, 1)
-local PagesContainer = Instance.new("Frame"); PagesContainer.Size = UDim2.new(1, -120, 1, -42); PagesContainer.Position = UDim2.fromOffset(120, 42); PagesContainer.BackgroundTransparency = 1; PagesContainer.Parent = MainFrame
-local Tabs = {}; local CurrentTab = nil
-local function SelectTab(tabName) for name, data in pairs(Tabs) do local isSelected = (name == tabName); data.Page.Visible = isSelected; data.Button.BackgroundColor3 = isSelected and Theme.ElementActive or Theme.Element; data.Button.TextColor3 = isSelected and Theme.TextPrimary or Theme.TextSecondary end; CurrentTab = tabName end
-local function CreateTab(tabName)
-    local btn = Instance.new("TextButton"); btn.Size = UDim2.new(1, 0, 0, 38); btn.BackgroundColor3 = Theme.Element; btn.Text = tabName; btn.TextColor3 = Theme.TextSecondary; btn.Font = Enum.Font.GothamMedium; btn.TextSize = 13; btn.Parent = TabList; Utils.Style(btn, 8, Theme.Stroke, 1)
-    local page = Instance.new("ScrollingFrame"); page.Size = UDim2.new(1, -20, 1, -20); page.Position = UDim2.fromOffset(10, 10); page.BackgroundTransparency = 1; page.ScrollBarThickness = 2; page.CanvasSize = UDim2.new(0, 0, 0, 0); page.AutomaticCanvasSize = Enum.AutomaticSize.Y; page.Visible = false; page.Parent = PagesContainer
-    local layout = Instance.new("UIListLayout"); layout.Padding = UDim.new(0, 8); layout.SortOrder = Enum.SortOrder.LayoutOrder; layout.Parent = page
-    Utils.Track(btn.Activated:Connect(function() SelectTab(tabName) end))
-    Tabs[tabName] = { Button = btn, Page = page }; if not CurrentTab then SelectTab(tabName) end; return page
-end
-local function CreateToggle(parent, text, defaultState, order, callback)
-    local btn = Instance.new("TextButton"); btn.LayoutOrder = order; btn.Size = UDim2.new(1, 0, 0, 42); btn.BackgroundColor3 = Theme.Surface; btn.Text = ""; btn.AutoButtonColor = false; btn.Parent = parent; Utils.Style(btn, 8, Theme.Stroke, 1)
-    local lbl = Instance.new("TextLabel"); lbl.Size = UDim2.new(1, -70, 1, 0); lbl.Position = UDim2.fromOffset(12, 0); lbl.BackgroundTransparency = 1; lbl.Text = text; lbl.TextColor3 = Theme.TextPrimary; lbl.Font = Enum.Font.GothamMedium; lbl.TextSize = 13; lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.Parent = btn
-    local ind = Instance.new("Frame"); ind.Size = UDim2.fromOffset(40, 22); ind.Position = UDim2.new(1, -52, 0.5, -11); ind.BackgroundColor3 = defaultState and Theme.ElementActive or Theme.Element; ind.Parent = btn; Utils.Style(ind, 11, Theme.Stroke, 1)
-    local kn = Instance.new("Frame"); kn.Size = UDim2.fromOffset(16, 16); kn.Position = defaultState and UDim2.fromOffset(21, 3) or UDim2.fromOffset(3, 3); kn.BackgroundColor3 = defaultState and Theme.TextPrimary or Theme.TextSecondary; kn.Parent = ind; Utils.Style(kn, 8, nil)
-    local state = defaultState
-    Utils.Track(btn.Activated:Connect(function() state = not state; ind.BackgroundColor3 = state and Theme.ElementActive or Theme.Element; kn.Position = state and UDim2.fromOffset(21, 3) or UDim2.fromOffset(3, 3); kn.BackgroundColor3 = state and Theme.TextPrimary or Theme.TextSecondary; if callback then pcall(callback, state) end end))
-end
-local function CreateCycleButton(parent, labelPrefix, options, defaultIndex, order, callback)
-    local idx = defaultIndex or 1
-    local btn = Instance.new("TextButton"); btn.LayoutOrder = order; btn.Size = UDim2.new(1, 0, 0, 42); btn.BackgroundColor3 = Theme.Element; btn.Text = labelPrefix .. ": " .. tostring(options[idx]); btn.TextColor3 = Theme.TextPrimary; btn.Font = Enum.Font.GothamSemibold; btn.TextSize = 13; btn.Parent = parent; Utils.Style(btn, 8, Theme.Stroke, 1)
-    Utils.Track(btn.Activated:Connect(function() idx = (idx % #options) + 1; btn.Text = labelPrefix .. ": " .. tostring(options[idx]); if callback then pcall(callback, options[idx], idx) end end))
 end
 
-local CombatPage = CreateTab("Combat"); local RenderPage = CreateTab("Render")
+local function BuildUI()
+    local guiParent = LocalPlayer:WaitForChild("PlayerGui")
+    pcall(function()
+        if gethui then
+            guiParent = gethui()
+        elseif CoreGui then
+            guiParent = CoreGui
+        end
+    end)
 
-CreateToggle(CombatPage, "Aimbot (НЕ через стены)", State.AimbotEnabled, 1, function(v) State.AimbotEnabled = v; Utils.Log("Aimbot: " .. tostring(v)) end)
-CreateCycleButton(CombatPage, "Цель Aimbot", { "Head", "Body" }, 1, 2, function(opt) State.AimPart = opt end)
-CreateCycleButton(CombatPage, "Плавность Aimbot", { "0.15 (Плавно)", "0.35 (Средне)", "0.6 (Быстро)", "1.0 (Мгновенно)" }, 2, 3, function(_, idx) State.Smoothness = ({0.15, 0.35, 0.6, 1.0})[idx] end)
-CreateCycleButton(CombatPage, "Радиус FOV", { "100", "150", "200", "250", "350", "500", "700" }, 4, 4, function(_, idx) State.FOV = ({100, 150, 200, 250, 350, 500, 700})[idx] end)
-CreateToggle(CombatPage, "No Recoil", State.NoRecoil, 5, function(v) State.NoRecoil = v end)
-CreateToggle(CombatPage, "Hitbox Expander", State.HitboxEnabled, 6, function(v) State.HitboxEnabled = v end)
-CreateCycleButton(CombatPage, "Размер Hitbox", { "8", "12", "15", "20", "30" }, 3, 7, function(_, idx) State.HitboxSize = ({8, 12, 15, 20, 30})[idx] end)
+    ScreenGui = Utils.Create("ScreenGui", {
+        Name = "BRM5_Tactical_UI",
+        ResetOnSpawn = false,
+        ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    }, guiParent)
 
-CreateToggle(RenderPage, "ESP (Сквозь стены)", State.ESPEnabled, 1, function(v) State.ESPEnabled = v end)
-CreateToggle(RenderPage, "Обводка", State.ESPOutline, 2, function(v) State.ESPOutline = v end)
-CreateToggle(RenderPage, "Показывать HP", State.ESPHealth, 3, function(v) State.ESPHealth = v end)
-CreateToggle(RenderPage, "Круг радиуса ESP", State.ESPRadius, 4, function(v) State.ESPRadius = v end)
-CreateCycleButton(RenderPage, "Дистанция ESP", { 1000, 2000, 3500, 5000 }, 2, 5, function(val) State.ESPDistance = val end)
+    EspFolder = Utils.Create("Folder", { Name = "ESP_Layer" }, ScreenGui)
+    HudHolder = Utils.Create("Folder", { Name = "Pinned_HUD_Layer" }, ScreenGui)
 
-local function MinimizeUI() if State.Minimized then return end State.Minimized = true; MainFrame.Visible = false; MiniIcon.Size = IconSize; MiniIcon.Visible = true end
-local function RestoreUI() if not State.Minimized then return end State.Minimized = false; MiniIcon.Visible = false; MainFrame.Visible = true end
-local function DeactivateScript()
-    if not State.Active then return end
-    State.Active = false
-    for _, conn in ipairs(State.Connections) do pcall(function() conn:Disconnect() end) end
-    pcall(function() RunService:UnbindFromRenderStep("BRM5_Main") end)
-    for _, hl in pairs(highlights) do pcall(function() hl:Destroy() end) end
-    if espFolder then pcall(function() espFolder:Destroy() end) end
-    if radiusCircle then pcall(function() radiusCircle:Destroy() end) end
-    pcall(function() ScreenGui:Destroy() end)
-    Env.BRM5_Cleanup = nil
-    Utils.Notify("BRM5", "Скрипт выгружен.")
+    -- Круг FOV в центре экрана
+    FovCircleFrame = Utils.Create("Frame", {
+        Name = "FOV_Circle",
+        BackgroundTransparency = 1,
+        Visible = false
+    }, ScreenGui)
+    Utils.AddCorner(FovCircleFrame, 999)
+    Utils.AddStroke(FovCircleFrame, Utils.Colors.LegitAccent, 1.3, 0.2)
+
+    -- Контейнер уведомлений
+    NotifyHolder = Utils.Create("Frame", {
+        Size = UDim2.new(0, 240, 0, 210),
+        Position = UDim2.new(1, -255, 1, -225),
+        BackgroundTransparency = 1
+    }, ScreenGui)
+    Utils.Create("UIListLayout", {
+        Padding = UDim.new(0, 6),
+        VerticalAlignment = Enum.VerticalAlignment.Bottom
+    }, NotifyHolder)
+
+    -- Отдельная экранная кнопка заморозки UI
+    ScreenLockBtn = Utils.Create("TextButton", {
+        Name = "ScreenLockButton",
+        Size = UDim2.new(0, 92, 0, 34),
+        Position = UDim2.new(0, 20, 0, 20),
+        BackgroundColor3 = Utils.Colors.Bg,
+        Text = "🔓 FREE",
+        TextColor3 = Utils.Colors.SubText,
+        Font = Enum.Font.GothamBold,
+        TextSize = 11
+    }, ScreenGui)
+    Utils.AddCorner(ScreenLockBtn, 8)
+    Utils.AddStroke(ScreenLockBtn, Utils.Colors.Border, 1.5)
+    Utils.MakeDraggable(ScreenLockBtn, ScreenLockBtn)
+    ScreenLockBtn.MouseButton1Click:Connect(ToggleUiLock)
+
+    -- Мини-иконка сворачивания (52x52)
+    MiniIcon = Utils.Create("TextButton", {
+        Name = "MiniIcon",
+        Size = UDim2.new(0, 52, 0, 52),
+        Position = UDim2.new(0, 20, 0.5, -26),
+        BackgroundColor3 = Utils.Colors.Bg,
+        Text = "BRM5",
+        TextColor3 = Utils.Colors.LegitAccent,
+        Font = Enum.Font.GothamBlack,
+        TextSize = 12,
+        Visible = false
+    }, ScreenGui)
+    Utils.AddCorner(MiniIcon, 26)
+    Utils.AddStroke(MiniIcon, Utils.Colors.LegitAccent, 2)
+    Utils.MakeDraggable(MiniIcon, MiniIcon)
+
+    -- Главное окно
+    MainWindow = Utils.Create("Frame", {
+        Name = "MainWindow",
+        Size = UDim2.new(0, 380, 0, 470),
+        Position = UDim2.new(0.5, -190, 0.5, -235),
+        BackgroundColor3 = Utils.Colors.Bg,
+        ClipsDescendants = true
+    }, ScreenGui)
+    Utils.AddCorner(MainWindow, 12)
+    MainStroke = Utils.AddStroke(MainWindow, Utils.Colors.Border, 1.5)
+
+    -- Верхняя панель (TopBar)
+    local topBar = Utils.Create("Frame", {
+        Name = "TopBar",
+        Size = UDim2.new(1, 0, 0, 44),
+        BackgroundColor3 = Utils.Colors.Panel,
+        BorderSizePixel = 0
+    }, MainWindow)
+    Utils.AddGradient(topBar, Utils.Colors.PanelLight, Utils.Colors.Panel, 90)
+    Utils.MakeDraggable(topBar, MainWindow)
+
+    HeaderAccentLine = Utils.Create("Frame", {
+        Size = UDim2.new(1, 0, 0, 2),
+        Position = UDim2.new(0, 0, 1, -2),
+        BackgroundColor3 = Utils.Colors.LegitAccent,
+        BorderSizePixel = 0
+    }, topBar)
+
+    -- Индикатор активности в заголовке
+    local statusDot = Utils.Create("Frame", {
+        Size = UDim2.new(0, 8, 0, 8),
+        Position = UDim2.new(0, 14, 0.5, -4),
+        BackgroundColor3 = Utils.Colors.Green,
+        BorderSizePixel = 0
+    }, topBar)
+    Utils.AddCorner(statusDot, 4)
+
+    Utils.Create("TextLabel", {
+        Size = UDim2.new(1, -135, 1, 0),
+        Position = UDim2.new(0, 28, 0, 0),
+        BackgroundTransparency = 1,
+        Text = "BRM5 TACTICAL SUITE",
+        TextColor3 = Utils.Colors.Text,
+        Font = Enum.Font.GothamBlack,
+        TextSize = 13,
+        TextXAlignment = Enum.TextXAlignment.Left
+    }, topBar)
+
+    -- Кнопка заморозки в шапке
+    TopLockBtn = Utils.Create("TextButton", {
+        Size = UDim2.new(0, 28, 0, 28),
+        Position = UDim2.new(1, -104, 0.5, -14),
+        BackgroundColor3 = Utils.Colors.Element,
+        Text = "🔓",
+        TextColor3 = Utils.Colors.SubText,
+        Font = Enum.Font.GothamBold,
+        TextSize = 13
+    }, topBar)
+    Utils.AddCorner(TopLockBtn, 6)
+    TopLockBtn.MouseButton1Click:Connect(ToggleUiLock)
+
+    -- Кнопка сворачивания "-"
+    local minBtn = Utils.Create("TextButton", {
+        Size = UDim2.new(0, 28, 0, 28),
+        Position = UDim2.new(1, -70, 0.5, -14),
+        BackgroundColor3 = Utils.Colors.Element,
+        Text = "—",
+        TextColor3 = Utils.Colors.Text,
+        Font = Enum.Font.GothamBold,
+        TextSize = 13
+    }, topBar)
+    Utils.AddCorner(minBtn, 6)
+
+    -- Кнопка деактивации "X"
+    local unloadBtn = Utils.Create("TextButton", {
+        Size = UDim2.new(0, 28, 0, 28),
+        Position = UDim2.new(1, -36, 0.5, -14),
+        BackgroundColor3 = Utils.Colors.RageAccent,
+        Text = "X",
+        TextColor3 = Utils.Colors.White,
+        Font = Enum.Font.GothamBold,
+        TextSize = 13
+    }, topBar)
+    Utils.AddCorner(unloadBtn, 6)
+
+    minBtn.MouseButton1Click:Connect(function() SetMenuMinimized(true) end)
+    MiniIcon.MouseButton1Click:Connect(function() SetMenuMinimized(false) end)
+    unloadBtn.MouseButton1Click:Connect(DeactivateScript)
+
+    local contentContainer = Utils.Create("Frame", {
+        Size = UDim2.new(1, 0, 1, -44),
+        Position = UDim2.new(0, 0, 0, 44),
+        BackgroundTransparency = 1
+    }, MainWindow)
+
+    -- // СТРАНИЦА 1: ГЛАВНОЕ МЕНЮ (КАРТОЧКИ LEGIT / RAGE С ЖИВЫМИ СЧЁТЧИКАМИ)
+    local mainPage = Utils.Create("Frame", {
+        Size = UDim2.new(1, -24, 1, -24),
+        Position = UDim2.new(0, 12, 0, 12),
+        BackgroundTransparency = 1
+    }, contentContainer)
+    Pages["Main"] = mainPage
+
+    Utils.Create("TextLabel", {
+        Size = UDim2.new(1, 0, 0, 20),
+        BackgroundTransparency = 1,
+        Text = "ВЫБЕРИТЕ РЕЖИМ СИМУЛЯЦИИ",
+        TextColor3 = Utils.Colors.SubText,
+        Font = Enum.Font.GothamBold,
+        TextSize = 11,
+        TextXAlignment = Enum.TextXAlignment.Left
+    }, mainPage)
+
+    -- Карточка LEGIT
+    local legitCard = Utils.Create("TextButton", {
+        Size = UDim2.new(1, 0, 0, 142),
+        Position = UDim2.new(0, 0, 0, 28),
+        BackgroundColor3 = Utils.Colors.Panel,
+        Text = "",
+        AutoButtonColor = false
+    }, mainPage)
+    Utils.AddCorner(legitCard, 10)
+    Utils.AddGradient(legitCard, Utils.Colors.PanelLight, Utils.Colors.Panel, 135)
+    Utils.AddStroke(legitCard, Utils.Colors.LegitAccent, 1.5)
+
+    Utils.Create("TextLabel", {
+        Size = UDim2.new(0.6, 0, 0, 28),
+        Position = UDim2.new(0, 16, 0, 14),
+        BackgroundTransparency = 1,
+        Text = "LEGIT",
+        TextColor3 = Utils.Colors.LegitAccent,
+        Font = Enum.Font.GothamBlack,
+        TextSize = 21,
+        TextXAlignment = Enum.TextXAlignment.Left
+    }, legitCard)
+
+    local legitBadge = Utils.Create("TextLabel", {
+        Size = UDim2.new(0, 86, 0, 22),
+        Position = UDim2.new(1, -100, 0, 16),
+        BackgroundColor3 = Utils.Colors.LegitDark,
+        Text = "0 ACTIVE",
+        TextColor3 = Utils.Colors.LegitAccent,
+        Font = Enum.Font.GothamBold,
+        TextSize = 10
+    }, legitCard)
+    Utils.AddCorner(legitBadge, 6)
+
+    Utils.Create("TextLabel", {
+        Size = UDim2.new(1, -32, 0, 76),
+        Position = UDim2.new(0, 16, 0, 48),
+        BackgroundTransparency = 1,
+        Text = "• Плавное наведение камеры с регулируемым FOV\n• Проверка видимости препятствий через Raycast\n• Тактический ESP (угловые рамки, HP, индикаторы)",
+        TextColor3 = Utils.Colors.SubText,
+        Font = Enum.Font.Gotham,
+        TextSize = 12,
+        TextWrapped = true,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextYAlignment = Enum.TextYAlignment.Top
+    }, legitCard)
+
+    legitCard.MouseButton1Click:Connect(function()
+        SwitchPage("Legit")
+        Utils.Notify("Профиль: LEGIT", "Нажмите HUD рядом с любой функцией для выноса на экран", Utils.Colors.LegitAccent)
+    end)
+
+    -- Карточка RAGE
+    local rageCard = Utils.Create("TextButton", {
+        Size = UDim2.new(1, 0, 0, 142),
+        Position = UDim2.new(0, 0, 0, 184),
+        BackgroundColor3 = Utils.Colors.Panel,
+        Text = "",
+        AutoButtonColor = false
+    }, mainPage)
+    Utils.AddCorner(rageCard, 10)
+    Utils.AddGradient(rageCard, Utils.Colors.PanelLight, Utils.Colors.Panel, 135)
+    Utils.AddStroke(rageCard, Utils.Colors.RageAccent, 1.5)
+
+    Utils.Create("TextLabel", {
+        Size = UDim2.new(0.6, 0, 0, 28),
+        Position = UDim2.new(0, 16, 0, 14),
+        BackgroundTransparency = 1,
+        Text = "RAGE",
+        TextColor3 = Utils.Colors.RageAccent,
+        Font = Enum.Font.GothamBlack,
+        TextSize = 21,
+        TextXAlignment = Enum.TextXAlignment.Left
+    }, rageCard)
+
+    local rageBadge = Utils.Create("TextLabel", {
+        Size = UDim2.new(0, 86, 0, 22),
+        Position = UDim2.new(1, -100, 0, 16),
+        BackgroundColor3 = Utils.Colors.RageDark,
+        Text = "0 ACTIVE",
+        TextColor3 = Utils.Colors.RageAccent,
+        Font = Enum.Font.GothamBold,
+        TextSize = 10
+    }, rageCard)
+    Utils.AddCorner(rageBadge, 6)
+
+    Utils.Create("TextLabel", {
+        Size = UDim2.new(1, -32, 0, 76),
+        Position = UDim2.new(0, 16, 0, 48),
+        BackgroundTransparency = 1,
+        Text = "• Мгновенный захват целей на 360° без ограничений\n• Расширенные хитбоксы всех частей тела\n• Полный ESP (Highlight, трассеры, скелет) + Auto Fire",
+        TextColor3 = Utils.Colors.SubText,
+        Font = Enum.Font.Gotham,
+        TextSize = 12,
+        TextWrapped = true,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextYAlignment = Enum.TextYAlignment.Top
+    }, rageCard)
+
+    rageCard.MouseButton1Click:Connect(function()
+        SwitchPage("Rage")
+        Utils.Notify("Профиль: RAGE", "Нажмите HUD рядом с любой функцией для выноса на экран", Utils.Colors.RageAccent)
+    end)
+
+    UpdateCardBadgesCallback = function()
+        if legitBadge then
+            legitBadge.Text = CountActiveFeatures(State.Legit) .. " ACTIVE"
+        end
+        if rageBadge then
+            rageBadge.Text = CountActiveFeatures(State.Rage) .. " ACTIVE"
+        end
+    end
+    UpdateCardBadgesCallback()
+
+    -- Кнопка полной деактивации скрипта
+    local deactivateBtn = Utils.Create("TextButton", {
+        Size = UDim2.new(1, 0, 0, 38),
+        Position = UDim2.new(0, 0, 1, -38),
+        BackgroundColor3 = Color3.fromRGB(36, 15, 20),
+        Text = "ДЕАКТИВИРОВАТЬ СКРИПТ",
+        TextColor3 = Utils.Colors.RageAccent,
+        Font = Enum.Font.GothamBold,
+        TextSize = 12
+    }, mainPage)
+    Utils.AddCorner(deactivateBtn, 8)
+    Utils.AddStroke(deactivateBtn, Utils.Colors.RageAccent, 1.2)
+    deactivateBtn.MouseButton1Click:Connect(DeactivateScript)
+
+    -- // Страница настроек с кнопкой возврата
+    local function CreateSettingsPage(pageKey, titleText, accentColor)
+        local page = Utils.Create("Frame", {
+            Size = UDim2.new(1, 0, 1, 0),
+            BackgroundTransparency = 1,
+            Visible = false
+        }, contentContainer)
+        Pages[pageKey] = page
+
+        local subBar = Utils.Create("Frame", {
+            Size = UDim2.new(1, -24, 0, 34),
+            Position = UDim2.new(0, 12, 0, 8),
+            BackgroundTransparency = 1
+        }, page)
+
+        local backBtn = Utils.Create("TextButton", {
+            Size = UDim2.new(0, 88, 1, 0),
+            BackgroundColor3 = Utils.Colors.Element,
+            Text = "← НАЗАД",
+            TextColor3 = Utils.Colors.Text,
+            Font = Enum.Font.GothamBold,
+            TextSize = 11
+        }, subBar)
+        Utils.AddCorner(backBtn, 7)
+        Utils.AddStroke(backBtn, accentColor, 1.2)
+        backBtn.MouseButton1Click:Connect(function() SwitchPage("Main") end)
+
+        Utils.Create("TextLabel", {
+            Size = UDim2.new(1, -98, 1, 0),
+            Position = UDim2.new(0, 98, 0, 0),
+            BackgroundTransparency = 1,
+            Text = titleText,
+            TextColor3 = accentColor,
+            Font = Enum.Font.GothamBlack,
+            TextSize = 14,
+            TextXAlignment = Enum.TextXAlignment.Right
+        }, subBar)
+
+        local scroll = Utils.Create("ScrollingFrame", {
+            Size = UDim2.new(1, -24, 1, -52),
+            Position = UDim2.new(0, 12, 0, 48),
+            BackgroundTransparency = 1,
+            ScrollBarThickness = 3,
+            ScrollBarImageColor3 = accentColor,
+            CanvasSize = UDim2.new(0, 0, 0, 0),
+            AutomaticCanvasSize = Enum.AutomaticSize.Y
+        }, page)
+
+        Utils.Create("UIListLayout", {
+            Padding = UDim.new(0, 6),
+            SortOrder = Enum.SortOrder.LayoutOrder
+        }, scroll)
+
+        return scroll
+    end
+
+    -- // СТРАНИЦА 2: LEGIT PROFILE
+    local legitScroll = CreateSettingsPage("Legit", "LEGIT PROFILE", Utils.Colors.LegitAccent)
+    local L = State.Legit
+    local LA = Utils.Colors.LegitAccent
+
+    AddSectionHeader(legitScroll, "Модуль 1: Target Assist", LA)
+    AddToggle(legitScroll, "L_Aim", "Наведение камеры (ПКМ)", "L: Aim Assist", L, "AimEnabled", LA)
+    AddSlider(legitScroll, "Плавность наведения", L, "Smoothness", 0.1, 1.0, 0.05, "", LA)
+    AddCycleButton(legitScroll, "Часть тела", L, "TargetPart", { "Head", "Torso", "HumanoidRootPart" }, nil, LA)
+    AddSlider(legitScroll, "Макс. дистанция", L, "MaxDistance", 100, 500, 25, " st", LA)
+    AddSlider(legitScroll, "Радиус FOV", L, "FovRadius", 100, 400, 10, " px", LA)
+    AddToggle(legitScroll, "L_Fov", "Показывать круг FOV", "L: FOV Circle", L, "ShowFov", LA)
+    AddToggle(legitScroll, "L_Vis", "Только видимые (Raycast)", "L: Raycast", L, "VisibleOnly", LA)
+
+    AddSectionHeader(legitScroll, "Модуль 2: Hitbox Modifier", LA)
+    AddToggle(legitScroll, "L_Hitbox", "Расширение головы", "L: Head Box", L, "HitboxEnabled", LA, function() HitboxModifier.RestoreAll() end)
+    AddSlider(legitScroll, "Множитель головы", L, "HitboxScale", 1.5, 2.0, 0.1, "x", LA, function() HitboxModifier.RestoreAll() end)
+
+    AddSectionHeader(legitScroll, "Модуль 3: Tactical Visual Overlay", LA)
+    AddToggle(legitScroll, "L_Esp", "Включить Tactical ESP", "L: ESP", L, "EspEnabled", LA)
+    AddCycleButton(legitScroll, "Стиль рамки (Box)", L, "BoxStyle", { "Corners", "Full", "Off" }, nil, LA)
+    AddToggle(legitScroll, "L_Hp", "Полоска HP + след урона", "L: HP Bar", L, "ShowHpBar", LA)
+    AddToggle(legitScroll, "L_Name", "Имя игрока", "L: Names", L, "ShowName", LA)
+    AddToggle(legitScroll, "L_Dist", "Дистанция и статус [VIS]", "L: Distance", L, "ShowDistance", LA)
+    AddToggle(legitScroll, "L_Dot", "Маркер головы (Head Dot)", "L: Head Dot", L, "ShowHeadDot", LA)
+    AddToggle(legitScroll, "L_Tracer", "Трассеры (Snaplines)", "L: Tracers", L, "ShowTracers", LA)
+    AddToggle(legitScroll, "L_Offscr", "Стрелки целей вне экрана", "L: Offscreen", L, "ShowOffscreen", LA)
+    AddToggle(legitScroll, "L_Skel", "Скелет (R6/R15)", "L: Skeleton", L, "ShowSkeleton", LA)
+    AddCycleButton(legitScroll, "Дальность ESP", L, "EspMaxDist", { 1000, 2000, 3500, 5000 }, function(v) return v .. " st" end, LA)
+    AddToggle(legitScroll, "L_EspVis", "ESP в прямой видимости", "L: ESP Vis", L, "EspVisibleOnly", LA)
+
+    AddSectionHeader(legitScroll, "Модуль 4: Weapon Modifier", LA)
+    AddToggle(legitScroll, "L_Recoil", "Мягкий No Recoil", "L: No Recoil", L, "NoRecoil", LA)
+    AddToggle(legitScroll, "L_Shake", "Отключить тряску камеры", "L: No Shake", L, "NoShake", LA)
+
+    -- // СТРАНИЦА 3: RAGE PROFILE
+    local rageScroll = CreateSettingsPage("Rage", "RAGE PROFILE", Utils.Colors.RageAccent)
+    local R = State.Rage
+    local RA = Utils.Colors.RageAccent
+
+    AddSectionHeader(rageScroll, "Модуль 1: Target Assist (360°)", RA)
+    AddToggle(rageScroll, "R_Aim", "Постоянное авто-наведение", "R: Auto Aim", R, "AimEnabled", RA)
+    AddSlider(rageScroll, "Дистанция захвата", R, "MaxDistance", 500, 2000, 100, " st", RA)
+    AddToggle(rageScroll, "R_Walls", "Игнорировать стены", "R: Wall Aim", R, "IgnoreWalls", RA)
+
+    AddSectionHeader(rageScroll, "Модуль 2: Hitbox Modifier (Все части)", RA)
+    AddToggle(rageScroll, "R_Hitbox", "Расширение всех хитбоксов", "R: All Boxes", R, "HitboxEnabled", RA, function() HitboxModifier.RestoreAll() end)
+    AddSlider(rageScroll, "Множитель хитбоксов", R, "HitboxScale", 5.0, 10.0, 0.5, "x", RA, function() HitboxModifier.RestoreAll() end)
+
+    AddSectionHeader(rageScroll, "Модуль 3: Full Tactical Overlay", RA)
+    AddToggle(rageScroll, "R_Esp", "Включить Rage ESP", "R: Rage ESP", R, "EspEnabled", RA)
+    AddCycleButton(rageScroll, "Стиль рамки (Box)", R, "BoxStyle", { "Corners", "Full", "Off" }, nil, RA)
+    AddToggle(rageScroll, "R_High", "Highlight (сквозь стены)", "R: Highlight", R, "ShowHighlight", RA)
+    AddToggle(rageScroll, "R_Skel", "Скелет (R6/R15)", "R: Skeleton", R, "ShowSkeleton", RA)
+    AddToggle(rageScroll, "R_Tracer", "Трассеры (Snaplines)", "R: Tracers", R, "ShowTracers", RA)
+    AddToggle(rageScroll, "R_Offscr", "Стрелки целей вне экрана", "R: Offscreen", R, "ShowOffscreen", RA)
+    AddToggle(rageScroll, "R_Part", "Партиклы над головой", "R: Particles", R, "ShowParticles", RA)
+    AddCycleButton(rageScroll, "Дальность ESP", R, "EspMaxDist", { 1000, 2000, 3500, 5000 }, function(v) return v .. " st" end, RA)
+
+    AddSectionHeader(rageScroll, "Модуль 4: Weapon Modifier", RA)
+    AddToggle(rageScroll, "R_Recoil", "Полный No Recoil", "R: No Recoil", R, "NoRecoil", RA)
+    AddToggle(rageScroll, "R_Shake", "Полный No Camera Shake", "R: No Shake", R, "NoShake", RA)
+    AddToggle(rageScroll, "R_Fire", "Auto Fire по цели", "R: Auto Fire", R, "AutoFire", RA)
+
+    -- Анимация появления главного окна (0.3 сек, Back easing)
+    MainWindow.Size = UDim2.new(0, 0, 0, 0)
+    TweenService:Create(
+        MainWindow,
+        TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+        { Size = UDim2.new(0, 380, 0, 470) }
+    ):Play()
 end
-Env.BRM5_Cleanup = DeactivateScript
-Utils.Drag(TopBar, MainFrame, nil); Utils.Drag(MiniIcon, MiniIcon, RestoreUI)
-Utils.Track(MinimizeBtn.Activated:Connect(MinimizeUI)); Utils.Track(DeactivateBtn.Activated:Connect(DeactivateScript))
 
-task.spawn(function() pcall(function() TweenService:Create(MainFrame, TweenInfo.new(0.45, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Size = TargetSize }):Play() end) end)
+-- // 8. ИНИЦИАЛИЗАЦИЯ ВСЕХ МОДУЛЕЙ
+local function Init()
+    BuildUI()
 
-Utils.Log("Скрипт загружен! Проверь консоль Delta на ошибки.")
-Utils.Log("Если ESP не работает — напиши в чат, что видно в консоли.")
+    local cAdded = Players.PlayerAdded:Connect(function(player)
+        VisualOverlay.CreatePlayerEsp(player)
+        local cChar = player.CharacterAdded:Connect(function(char)
+            task.wait(0.3)
+            HitboxModifier.ApplyToCharacter(char)
+        end)
+        table.insert(Connections, cChar)
+    end)
+
+    local cRemoving = Players.PlayerRemoving:Connect(function(player)
+        if player.Character then
+            HitboxModifier.RestoreCharacter(player.Character)
+        end
+        VisualOverlay.RemovePlayerEsp(player)
+    end)
+
+    table.insert(Connections, cAdded)
+    table.insert(Connections, cRemoving)
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            VisualOverlay.CreatePlayerEsp(player)
+            if player.Character then
+                HitboxModifier.ApplyToCharacter(player.Character)
+            end
+            local cChar = player.CharacterAdded:Connect(function(char)
+                task.wait(0.3)
+                HitboxModifier.ApplyToCharacter(char)
+            end)
+            table.insert(Connections, cChar)
+        end
+    end
+
+    local aimBindName = "BRM5_TargetAssist_Render"
+    RunService:BindToRenderStep(aimBindName, Enum.RenderPriority.Camera.Value + 1, TargetAssist.Step)
+    table.insert(RenderBindings, aimBindName)
+
+    local cRender = RunService.RenderStepped:Connect(function()
+        if State.Unloaded then return end
+        pcall(HitboxModifier.Update)
+        pcall(VisualOverlay.Update)
+        pcall(WeaponModifier.Step)
+    end)
+    table.insert(Connections, cRender)
+
+    Utils.Notify("BRM5 Tactical Suite", "Система загружена. Доступны 2D-боксы, индикаторы и HUD-плашки.", Utils.Colors.LegitAccent)
+end
+
+Init()
